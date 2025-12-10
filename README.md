@@ -2,13 +2,13 @@
 
 ![](art/logo.png)
 
-[![Repo](https://img.shields.io/badge/github-gray?logo=github)](https://github.com/davidsmith3/datadog-mcp)
-[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/davidsmith3/datadog-mcp/test.yml?label=test)](https://github.com/davidsmith3/datadog-mcp/actions)
-[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/davidsmith3/datadog-mcp/backwards_compatibility.yml?label=backwards_compatibility)](https://github.com/davidsmith3/datadog-mcp/actions)
-[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/davidsmith3/datadog-mcp/build_docker_image.yml?label=build_docker_image)](https://github.com/davidsmith3/datadog-mcp/actions)
+[![Repo](https://img.shields.io/badge/github-gray?logo=github)](https://github.com/zero-to-prod/datadog-mcp)
+[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/zero-to-prod/datadog-mcp/test.yml?label=test)](https://github.com/zero-to-prod/datadog-mcp/actions)
+[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/zero-to-prod/datadog-mcp/backwards_compatibility.yml?label=backwards_compatibility)](https://github.com/zero-to-prod/datadog-mcp/actions)
+[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/zero-to-prod/datadog-mcp/build_docker_image.yml?label=build_docker_image)](https://github.com/zero-to-prod/datadog-mcp/actions)
 [![GitHub License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](https://github.com/zero-to-prod/datadog-mcp/blob/main/LICENSE.md)
-[![wakatime](https://wakatime.com/badge/github/davidsmith3/datadog-mcp.svg)](https://wakatime.com/badge/github/davidsmith3/datadog-mcp)
-[![Hits-of-Code](https://hitsofcode.com/github/davidsmith3/datadog-mcp?branch=main)](https://hitsofcode.com/github/davidsmith3/datadog-mcp/view?branch=main)
+[![wakatime](https://wakatime.com/badge/github/zero-to-prod/datadog-mcp.svg)](https://wakatime.com/badge/github/zero-to-prod/datadog-mcp)
+[![Hits-of-Code](https://hitsofcode.com/github/zero-to-prod/datadog-mcp?branch=main)](https://hitsofcode.com/github/zero-to-prod/datadog-mcp/view?branch=main)
 
 ## Contents
 
