@@ -1,0 +1,76 @@
+{
+  "name": ":vendor_name/:package_name",
+  "description": ":package_description",
+  "license": "MIT",
+  "type": "library",
+  "keywords": [
+    ":vendor_name",
+    ":package_name"
+  ],
+  "readme": "./README.md",
+  "time": "2025-12-08",
+  "authors": [
+    {
+      "name": ":author_name",
+      "email": ":author_email",
+      "homepage": ":author_homepage",
+      "role": "maintainer"
+    }
+  ],
+  "homepage": "https://github.com/:github_org/:github_repo",
+  "support": {
+    "email": ":author_email",
+    "issues": "https://github.com/:github_org/:github_repo/issues",
+    "source": "https://github.com/:github_org/:github_repo",
+    "docs": "https://:github_org.github.io/:github_repo/",
+    "security": "https://github.com/:github_org/:github_repo/blob/main/SECURITY.md"
+  },
+  "funding": [
+    {
+      "type": "GitHub",
+      "url": "https://github.com/sponsors/:author_username"
+    }
+  ],
+  "require": {
+    "php": ">=8.4",
+    "ext-json": "*",
+    "ext-filter": "*",
+    "psr/log": "^3.0",
+    "zero-to-prod/data-model": "^81.9",
+    "zero-to-prod/package-helper": "^1.1.3",
+    "zero-to-prod/web-framework": "*",
+    "mcp/sdk": "^0.1.0",
+    "zero-to-prod/http-router": "^0.1.1",
+    "zero-to-prod/container": "^0.2.0",
+    "nyholm/psr7": "^1.8",
+    "nyholm/psr7-server": "^1.1"
+  },
+  "autoload": {
+    "psr-4": {
+      "App\\": "app/",
+      "Tests\\": "tests/"
+    },
+    "files": [
+      "app/Helpers/functions.php"
+    ]
+  },
+  "bin": [
+    "bin/:package_slug"
+  ],
+  "require-dev": {
+    "phpunit/phpunit": "<12.0"
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Tests\\": "tests/"
+    },
+    "files": [
+      "app/Helpers/functions.php"
+    ]
+  },
+  "config": {
+    "allow-plugins": {
+      "php-http/discovery": true
+    }
+  }
+}

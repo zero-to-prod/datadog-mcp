@@ -1,0 +1,74 @@
+#!/usr/bin/env php
+<?php
+
+/**
+ * MCP Server CLI Entry Point
+ *
+ * This is the command-line interface for the MCP server.
+ * Customize this file to add CLI commands specific to your implementation.
+ */
+
+declare(strict_types=1);
+
+// Autoload dependencies
+if (file_exists(__DIR__ . '/../vendor/autoload.php')) {
+    require __DIR__ . '/../vendor/autoload.php';
+} elseif (file_exists(__DIR__ . '/../../../autoload.php')) {
+    require __DIR__ . '/../../../autoload.php';
+} else {
+    fwrite(STDERR, 'Error: Unable to find Composer autoload file.' . PHP_EOL);
+    fwrite(STDERR, 'Please run: composer install' . PHP_EOL);
+    exit(1);
+}
+
+// Simple CLI implementation
+$command = $argv[1] ?? 'help';
+
+match ($command) {
+    'help', '--help', '-h' => printHelp(),
+    'version', '--version', '-v' => printVersion(),
+    'list' => listCommands(),
+    default => unknownCommand($command)
+};
+
+function printHelp(): void
+{
+    echo <<<HELP
+:server_name CLI
+
+Usage:
+  :package_slug [command]
+
+Available Commands:
+  help      Show this help message
+  version   Show version information
+  list      List all available commands
+
+For more information, see the documentation at:
+https://github.com/:github_org/:github_repo
+
+HELP;
+    exit(0);
+}
+
+function printVersion(): void
+{
+    echo ':server_name v:server_version' . PHP_EOL;
+    exit(0);
+}
+
+function listCommands(): void
+{
+    echo 'Available commands:' . PHP_EOL;
+    echo '  help      - Show help message' . PHP_EOL;
+    echo '  version   - Show version information' . PHP_EOL;
+    echo '  list      - List all commands' . PHP_EOL;
+    exit(0);
+}
+
+function unknownCommand(string $command): void
+{
+    fwrite(STDERR, "Unknown command: {$command}" . PHP_EOL);
+    fwrite(STDERR, "Run ':package_slug help' for usage information." . PHP_EOL);
+    exit(1);
+}

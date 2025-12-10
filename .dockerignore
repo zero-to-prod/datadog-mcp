@@ -1,0 +1,13 @@
+tests/
+.git/
+.github/
+.gitignore
+.env
+.env.example
+*.md
+phpunit.xml
+.idea/
+logs/
+xdebug-profiles/
+.docker/
+docker/

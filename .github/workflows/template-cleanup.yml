@@ -1,0 +1,115 @@
+name: Template Cleanup
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  template-cleanup:
+    runs-on: ubuntu-latest
+    # Only run if this is NOT the template repository itself
+    if: github.repository != ':github_org/:github_repo'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if template already configured
+        id: check
+        run: |
+          if grep -q ":vendor_name" composer.json; then
+            echo "configured=false" >> $GITHUB_OUTPUT
+          else
+            echo "configured=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create configuration reminder issue
+        if: steps.check.outputs.configured == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Check if issue already exists
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'template-setup'
+            });
+
+            if (issues.data.length > 0) {
+              console.log('Configuration reminder issue already exists');
+              return;
+            }
+
+            // Create the issue
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '🚀 Configure Your MCP Server Template',
+              labels: ['template-setup', 'documentation'],
+              body: `Welcome to your new MCP server repository!
+
+            ## Next Steps
+
+            This repository was created from a template and needs to be configured for your project.
+
+            ### Configuration Instructions
+
+            1. **Clone this repository locally:**
+               \`\`\`bash
+               git clone https://github.com/${context.repo.owner}/${context.repo.repo}.git
+               cd ${context.repo.repo}
+               \`\`\`
+
+            2. **Run the configuration script:**
+               \`\`\`bash
+               php configure.php
+               \`\`\`
+
+            3. **Follow the prompts** to enter your:
+               - Package name and description
+               - Author information
+               - Docker configuration
+               - GitHub repository details
+
+            4. **Review and commit the changes:**
+               \`\`\`bash
+               git diff
+               git add .
+               git commit -m "Configure from template"
+               git push
+               \`\`\`
+
+            5. **Install dependencies and test:**
+               \`\`\`bash
+               composer install
+               vendor/bin/phpunit
+               \`\`\`
+
+            ### Detailed Documentation
+
+            For comprehensive setup instructions, see [TEMPLATE_SETUP.md](./TEMPLATE_SETUP.md).
+
+            ### What Happens Next
+
+            - All placeholders (like \`:vendor_name\`, \`:package_name\`) will be replaced with your values
+            - Your binary file will be renamed
+            - All documentation will be updated with your details
+            - This issue will remain open until configuration is complete
+
+            ### Need Help?
+
+            Check the [TEMPLATE_SETUP.md](./TEMPLATE_SETUP.md) guide or review the [configure.php](./configure.php) script for details.
+
+            ---
+
+            Once you've completed the configuration, you can close this issue and optionally remove the template files:
+            \`\`\`bash
+            rm configure.php config TEMPLATE_SETUP.md TEMPLATE_TESTING.md .github/workflows/template-cleanup.yml
+            \`\`\``
+            });
+
+            console.log('Created configuration reminder issue');
