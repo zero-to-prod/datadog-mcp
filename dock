@@ -53,12 +53,12 @@ PHP_VERSION=$(grep "^PHP_VERSION=" .env | cut -d '=' -f2-)
 case "$1" in
   test)
     shift
-    run_service "debug" vendor/bin/phpunit "$@"
+    run_service "dev" vendor/bin/phpunit "$@"
   ;;
   build)
     shift
     docker compose build "app" "$@"
-    docker compose build "debug" "$@"
+    docker compose build "dev" "$@"
     docker compose build "composer" "$@"
   ;;
   composer)
