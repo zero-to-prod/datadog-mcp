@@ -1,16 +1,14 @@
-# :package_name
-
-> **Using this as a template?** Run `php configure.php` first to customize this repository for your project. See [TEMPLATE_SETUP.md](./TEMPLATE_SETUP.md) for details.
+# datadog-mcp
 
 ![](art/logo.png)
 
-[![Repo](https://img.shields.io/badge/github-gray?logo=github)](https://github.com/:github_org/:github_repo)
-[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/:github_org/:github_repo/test.yml?label=test)](https://github.com/:github_org/:github_repo/actions)
-[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/:github_org/:github_repo/backwards_compatibility.yml?label=backwards_compatibility)](https://github.com/:github_org/:github_repo/actions)
-[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/:github_org/:github_repo/build_docker_image.yml?label=build_docker_image)](https://github.com/:github_org/:github_repo/actions)
-[![GitHub License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](https://github.com/:vendor_name/:package_name/blob/main/LICENSE.md)
-[![wakatime](https://wakatime.com/badge/github/:github_org/:github_repo.svg)](https://wakatime.com/badge/github/:github_org/:github_repo)
-[![Hits-of-Code](https://hitsofcode.com/github/:github_org/:github_repo?branch=main)](https://hitsofcode.com/github/:github_org/:github_repo/view?branch=main)
+[![Repo](https://img.shields.io/badge/github-gray?logo=github)](https://github.com/davidsmith3/datadog-mcp)
+[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/davidsmith3/datadog-mcp/test.yml?label=test)](https://github.com/davidsmith3/datadog-mcp/actions)
+[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/davidsmith3/datadog-mcp/backwards_compatibility.yml?label=backwards_compatibility)](https://github.com/davidsmith3/datadog-mcp/actions)
+[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/davidsmith3/datadog-mcp/build_docker_image.yml?label=build_docker_image)](https://github.com/davidsmith3/datadog-mcp/actions)
+[![GitHub License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](https://github.com/zero-to-prod/datadog-mcp/blob/main/LICENSE.md)
+[![wakatime](https://wakatime.com/badge/github/davidsmith3/datadog-mcp.svg)](https://wakatime.com/badge/github/davidsmith3/datadog-mcp)
+[![Hits-of-Code](https://hitsofcode.com/github/davidsmith3/datadog-mcp?branch=main)](https://hitsofcode.com/github/davidsmith3/datadog-mcp/view?branch=main)
 
 ## Contents
 
@@ -26,7 +24,7 @@
 
 ## Introduction
 
-:package_description
+MCP Server for DataDog
 
 ## Requirements
 
@@ -35,7 +33,7 @@
 ## Installation
 
 ```bash
-composer require :vendor_name/:package_name
+composer require zero-to-prod/datadog-mcp
 ```
 
 ## Quick Start
@@ -43,15 +41,15 @@ composer require :vendor_name/:package_name
 Run the Docker image:
 
 ```shell
-docker run -d -p 8080:80 \
+docker run -d -p 8091:80 \
   -e MCP_DEBUG=true \
-  :docker_registry_username/:docker_image_name:latest
+  davidsmith3/datadog-mcp:latest
 ```
 
 Add the server to Claude:
 
 ```shell
-claude mcp add --transport http :package_slug http://localhost:8080/mcp
+claude mcp add --transport http datadog-mcp http://localhost:8091/mcp
 ```
 
 Alternatively, add the server configuration directly:
@@ -59,9 +57,9 @@ Alternatively, add the server configuration directly:
 ```json
 {
     "mcpServers": {
-        ":package_slug": {
+        "datadog-mcp": {
             "type": "streamable-http",
-            "url": "http://localhost:8080/mcp"
+            "url": "http://localhost:8091/mcp"
         }
     }
 }
@@ -70,15 +68,15 @@ Alternatively, add the server configuration directly:
 ## Usage
 
 ```shell
-vendor/bin/:package_slug list
+vendor/bin/datadog-mcp list
 ```
 
 ## Docker
 
-Run using the [Docker image](https://hub.docker.com/repository/docker/:docker_registry_username/:docker_image_name):
+Run using the [Docker image](https://hub.docker.com/repository/docker/davidsmith3/datadog-mcp):
 
 ```shell
-docker run -d -p 8080:80 :docker_registry_username/:docker_image_name:latest
+docker run -d -p 8091:80 davidsmith3/datadog-mcp:latest
 ```
 
 ### Environment Variables
@@ -88,17 +86,17 @@ docker run -d -p 8080:80 :docker_registry_username/:docker_image_name:latest
 Example:
 
 ```shell
-docker run -d -p 8080:80 \
+docker run -d -p 8091:80 \
   -e MCP_DEBUG=true \
-  :docker_registry_username/:docker_image_name:latest
+  davidsmith3/datadog-mcp:latest
 ```
 
 ### Persistent Sessions
 
 ```shell
-docker run -d -p 8080:80 \
+docker run -d -p 8091:80 \
   -v mcp-sessions:/app/storage/mcp-sessions \
-  :docker_registry_username/:docker_image_name:latest
+  davidsmith3/datadog-mcp:latest
 ```
 
 ## Contributing

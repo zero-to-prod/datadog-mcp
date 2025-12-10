@@ -10,7 +10,7 @@ jobs:
   template-cleanup:
     runs-on: ubuntu-latest
     # Only run if this is NOT the template repository itself
-    if: github.repository != ':github_org/:github_repo'
+    if: github.repository != 'davidsmith3/datadog-mcp'
 
     steps:
       - uses: actions/checkout@v4
@@ -20,7 +20,7 @@ jobs:
       - name: Check if template already configured
         id: check
         run: |
-          if grep -q ":vendor_name" composer.json; then
+          if grep -q "zero-to-prod" composer.json; then
             echo "configured=false" >> $GITHUB_OUTPUT
           else
             echo "configured=true" >> $GITHUB_OUTPUT
@@ -95,7 +95,7 @@ jobs:
 
             ### What Happens Next
 
-            - All placeholders (like \`:vendor_name\`, \`:package_name\`) will be replaced with your values
+            - All placeholders (like \`zero-to-prod\`, \`datadog-mcp\`) will be replaced with your values
             - Your binary file will be renamed
             - All documentation will be updated with your details
             - This issue will remain open until configuration is complete

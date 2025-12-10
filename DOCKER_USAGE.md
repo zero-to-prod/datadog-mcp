@@ -8,11 +8,11 @@
 # Run the latest version
 docker run -d \
   --name cronitor-mcp \
-  -p 8080:80 \
+  -p 8091:80 \
   davidsmith3/cronitor-mcp:latest
 
 # Access the MCP server
-curl http://localhost:8080/mcp
+curl http://localhost:8091/mcp
 ```
 
 ### Build and Run Locally
@@ -24,7 +24,7 @@ docker build --target production -t cronitor-mcp:local .
 # Run the container
 docker run -d \
   --name cronitor-mcp \
-  -p 8080:80 \
+  -p 8091:80 \
   cronitor-mcp:local
 ```
 
@@ -42,7 +42,7 @@ docker run -d \
 ```bash
 docker run -d \
   --name cronitor-mcp \
-  -p 8080:80 \
+  -p 8091:80 \
   -e MCP_DEBUG=true \
   -e PHP_MEMORY_LIMIT=512M \
   davidsmith3/cronitor-mcp:latest
@@ -55,7 +55,7 @@ MCP sessions are stored in `/var/www/html/storage/mcp-sessions`. To persist sess
 ```bash
 docker run -d \
   --name cronitor-mcp \
-  -p 8080:80 \
+  -p 8091:80 \
   -v cronitor-sessions:/var/www/html/storage/mcp-sessions \
   davidsmith3/cronitor-mcp:latest
 ```
@@ -71,13 +71,13 @@ The container includes a health check that verifies the `/mcp` endpoint:
 docker ps --filter "name=cronitor-mcp"
 
 # Manual health check
-curl -X OPTIONS http://localhost:8080/mcp
+curl -X OPTIONS http://localhost:8091/mcp
 ```
 
 ### Initialize MCP Session
 
 ```bash
-curl -X POST http://localhost:8080/mcp \
+curl -X POST http://localhost:8091/mcp \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -127,7 +127,7 @@ Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS
 # Use the session ID from the initialize response
 SESSION_ID="<your-session-id>"
 
-curl -X POST http://localhost:8080/mcp \
+curl -X POST http://localhost:8091/mcp \
   -H "Content-Type: application/json" \
   -H "Mcp-Session-Id: $SESSION_ID" \
   -d '{
@@ -140,7 +140,7 @@ curl -X POST http://localhost:8080/mcp \
 ### Call a Tool
 
 ```bash
-curl -X POST http://localhost:8080/mcp \
+curl -X POST http://localhost:8091/mcp \
   -H "Content-Type: application/json" \
   -H "Mcp-Session-Id: $SESSION_ID" \
   -d '{
@@ -166,7 +166,7 @@ services:
   mcp:
     image: davidsmith3/cronitor-mcp:latest
     ports:
-      - "8080:80"
+      - "8091:80"
     environment:
       - MCP_DEBUG=false
     volumes:
@@ -198,14 +198,14 @@ The image supports both AMD64 and ARM64 architectures:
 docker run -d \
   --platform linux/amd64 \
   --name cronitor-mcp \
-  -p 8080:80 \
+  -p 8091:80 \
   davidsmith3/cronitor-mcp:latest
 
 # For ARM64 (e.g., Apple Silicon, Raspberry Pi)
 docker run -d \
   --platform linux/arm64 \
   --name cronitor-mcp \
-  -p 8080:80 \
+  -p 8091:80 \
   davidsmith3/cronitor-mcp:latest
 ```
 
@@ -256,7 +256,7 @@ services:
   mcp:
     image: davidsmith3/cronitor-mcp:latest
     ports:
-      - "8080:80"
+      - "8091:80"
     deploy:
       replicas: 3
       restart_policy:
@@ -367,7 +367,7 @@ docker exec cronitor-mcp curl -f http://localhost:80/mcp -X OPTIONS
 docker run -d \
   --name cronitor-mcp \
   --no-healthcheck \
-  -p 8080:80 \
+  -p 8091:80 \
   davidsmith3/cronitor-mcp:latest
 ```
 

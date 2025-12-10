@@ -44,32 +44,32 @@ jobs:
           push: false
           load: true
           cache-from: type=gha
-          tags: :docker_image_name:test
+          tags: datadog-mcp:test
           build-args: |
             QEMU_CPU=max
           labels: |
-            org.opencontainers.image.title=:server_name
-            org.opencontainers.image.description=:package_description
+            org.opencontainers.image.title=Datadog Mcp MCP Server
+            org.opencontainers.image.description= MCP Server for DataDog
             org.opencontainers.image.url=${{ github.event.repository.html_url }}
             org.opencontainers.image.source=${{ github.event.repository.html_url }}
             org.opencontainers.image.version=${{ env.VERSION }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.created=${{ github.event.repository.updated_at }}
-            org.opencontainers.image.vendor=:author_name
+            org.opencontainers.image.vendor=david_smith
             org.opencontainers.image.licenses=MIT
 
       - name: Test image functionality
         timeout-minutes: 1
         run: |
           echo "Testing image functionality..."
-          docker run --rm :docker_image_name:test --help || docker run --rm :docker_image_name:test --version || echo "Basic container validation passed"
+          docker run --rm datadog-mcp:test --help || docker run --rm datadog-mcp:test --version || echo "Basic container validation passed"
           echo "Image test completed successfully"
 
       - name: Scan for vulnerabilities
         uses: aquasecurity/trivy-action@master
         timeout-minutes: 2
         with:
-          image-ref: ':docker_image_name:test'
+          image-ref: 'datadog-mcp:test'
           format: 'table'
           exit-code: '1'
           ignore-unfixed: true
@@ -80,7 +80,7 @@ jobs:
         uses: docker/login-action@v3
         timeout-minutes: 1
         with:
-          username: :docker_registry_username
+          username: davidsmith3
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
 
       - name: Build and push multi-platform
@@ -96,18 +96,18 @@ jobs:
           build-args: |
             QEMU_CPU=max
           tags: |
-            :docker_registry_username/:docker_image_name:latest
-            :docker_registry_username/:docker_image_name:${{ env.VERSION }}
-            :docker_registry_username/:docker_image_name:${{ env.MAJOR_MINOR }}
+            davidsmith3/datadog-mcp:latest
+            davidsmith3/datadog-mcp:${{ env.VERSION }}
+            davidsmith3/datadog-mcp:${{ env.MAJOR_MINOR }}
           labels: |
-            org.opencontainers.image.title=:server_name
-            org.opencontainers.image.description=:package_description
+            org.opencontainers.image.title=Datadog Mcp MCP Server
+            org.opencontainers.image.description= MCP Server for DataDog
             org.opencontainers.image.url=${{ github.event.repository.html_url }}
             org.opencontainers.image.source=${{ github.event.repository.html_url }}
             org.opencontainers.image.version=${{ env.VERSION }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.created=${{ github.event.repository.updated_at }}
-            org.opencontainers.image.vendor=:author_name
+            org.opencontainers.image.vendor=david_smith
             org.opencontainers.image.licenses=MIT
 
       - name: Update Docker Hub description
@@ -115,8 +115,8 @@ jobs:
         continue-on-error: true
         uses: peter-evans/dockerhub-description@v5
         with:
-          username: :docker_registry_username
+          username: davidsmith3
           password: ${{ secrets.DOCKERHUB_PASSWORD }}
-          repository: :docker_registry_username/:docker_image_name
-          short-description: ":package_description"
+          repository: davidsmith3/datadog-mcp
+          short-description: " MCP Server for DataDog"
           readme-filepath: ./README.md

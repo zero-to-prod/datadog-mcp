@@ -40,7 +40,7 @@ class McpController
         }
 
         $builder = Server::builder()
-            ->setServerInfo(':server_name', ':server_version')
+            ->setServerInfo('Datadog Mcp MCP Server', '1.0.0')
             ->setDiscovery(__DIR__.'/../../..', ['/app/Http/Controllers'])
             ->setSession(new FileSessionStore($sessions_dir));
 

@@ -40,21 +40,21 @@ Ensure all placeholders use the correct colon-prefixed format:
 grep -roh ":[a-z_]*" --exclude-dir={vendor,.git,node_modules} . | sort | uniq
 
 # Expected placeholders:
-# :vendor_name
-# :package_name
-# :package_slug
-# :package_description
-# :package_classname
-# :server_name
-# :server_version
-# :author_name
-# :author_email
-# :author_username
-# :author_homepage
-# :docker_registry_username
-# :docker_image_name
-# :github_org
-# :github_repo
+# zero-to-prod
+# datadog-mcp
+# datadog-mcp
+#  MCP Server for DataDog
+# App
+# Datadog Mcp MCP Server
+# 1.0.0
+# david_smith
+# dave0016@gmail.com
+# zero-to-prod
+# https://github.com/zero-to-prod/datadog-mcp
+# davidsmith3
+# datadog-mcp
+# davidsmith3
+# datadog-mcp
 ```
 
 ### 3. Test Configuration Script
@@ -96,7 +96,7 @@ y
 EOF
 
 # Verify placeholders were replaced
-grep -r ":vendor_name" --exclude-dir=vendor . && echo "FAIL: Placeholders remain" || echo "PASS: No placeholders found"
+grep -r "zero-to-prod" --exclude-dir=vendor . && echo "FAIL: Placeholders remain" || echo "PASS: No placeholders found"
 ```
 
 ### 4. Validate Generated Files
@@ -179,13 +179,13 @@ docker build -t test-server:test .
 docker images | grep test-server
 
 # Run the container
-docker run -d -p 8080:80 --name test-server test-server:test
+docker run -d -p 8091:80 --name test-server test-server:test
 
 # Check container is running
 docker ps | grep test-server
 
 # Test HTTP endpoint
-curl http://localhost:8080/
+curl http://localhost:8091/
 
 # Stop and remove container
 docker stop test-server && docker rm test-server
@@ -232,7 +232,7 @@ test -f TEMPLATE_SETUP.md && echo "✓ TEMPLATE_SETUP.md exists" || echo "✗ Mi
 test -f TEMPLATE_TESTING.md && echo "✓ TEMPLATE_TESTING.md exists" || echo "✗ Missing"
 
 # Verify placeholders are present
-grep -q ":vendor_name" composer.json && echo "✓ Placeholders present" || echo "✗ Already configured"
+grep -q "zero-to-prod" composer.json && echo "✓ Placeholders present" || echo "✗ Already configured"
 ```
 
 ### 3. Run Configuration
@@ -265,7 +265,7 @@ git push
 
 ```bash
 # Check all placeholders replaced
-grep -r ":" composer.json | grep -E ":vendor_name|:package_name" && echo "FAIL" || echo "PASS"
+grep -r ":" composer.json | grep -E "zero-to-prod|datadog-mcp" && echo "FAIL" || echo "PASS"
 
 # Verify project works
 composer install

@@ -1,34 +1,34 @@
 {
-  "name": ":vendor_name/:package_name",
-  "description": ":package_description",
+  "name": "zero-to-prod/datadog-mcp",
+  "description": " MCP Server for DataDog",
   "license": "MIT",
   "type": "library",
   "keywords": [
-    ":vendor_name",
-    ":package_name"
+    "zero-to-prod",
+    "datadog-mcp"
   ],
   "readme": "./README.md",
   "time": "2025-12-08",
   "authors": [
     {
-      "name": ":author_name",
-      "email": ":author_email",
-      "homepage": ":author_homepage",
+      "name": "david_smith",
+      "email": "dave0016@gmail.com",
+      "homepage": "https://github.com/zero-to-prod/datadog-mcp",
       "role": "maintainer"
     }
   ],
-  "homepage": "https://github.com/:github_org/:github_repo",
+  "homepage": "https://github.com/davidsmith3/datadog-mcp",
   "support": {
-    "email": ":author_email",
-    "issues": "https://github.com/:github_org/:github_repo/issues",
-    "source": "https://github.com/:github_org/:github_repo",
-    "docs": "https://:github_org.github.io/:github_repo/",
-    "security": "https://github.com/:github_org/:github_repo/blob/main/SECURITY.md"
+    "email": "dave0016@gmail.com",
+    "issues": "https://github.com/davidsmith3/datadog-mcp/issues",
+    "source": "https://github.com/davidsmith3/datadog-mcp",
+    "docs": "https://davidsmith3.github.io/datadog-mcp/",
+    "security": "https://github.com/davidsmith3/datadog-mcp/blob/main/SECURITY.md"
   },
   "funding": [
     {
       "type": "GitHub",
-      "url": "https://github.com/sponsors/:author_username"
+      "url": "https://github.com/sponsors/zero-to-prod"
     }
   ],
   "require": {
@@ -55,7 +55,7 @@
     ]
   },
   "bin": [
-    "bin/:package_slug"
+    "bin/datadog-mcp"
   ],
   "require-dev": {
     "phpunit/phpunit": "<12.0"

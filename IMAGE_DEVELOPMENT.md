@@ -9,7 +9,7 @@
 Set these in your `.env` file:
 
 ```dotenv
-DOCKER_IMAGE=:docker_registry_username/:docker_image_name
+DOCKER_IMAGE=davidsmith3/datadog-mcp
 DOCKER_IMAGE_TAG=latest
 ```
 
