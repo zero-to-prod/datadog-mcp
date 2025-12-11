@@ -392,8 +392,85 @@ class LogsController
                 TEXT,
             enum: ['full', 'count', 'summary']
         )]
-        ?string $format = 'full'
-    ): array {
+        ?string $format = 'full',
+        #[Schema(
+            type: 'string',
+            description: <<<TEXT
+                jq filter expression to transform the response data. Optional.
+
+                Applies jq syntax to filter, transform, or extract specific data from the response.
+                The jq filter is applied AFTER format processing.
+
+                Return types: jq filters can return any JSON value (object, array, string, number, boolean, null).
+
+                Examples:
+                - ".data[0]" - Get only the first log entry (returns: object)
+                - "[.data[]]" - Get all log entries as array (returns: array)
+                - ".data | length" - Get count of logs (returns: number)
+                - "[.data[].attributes.service] | unique" - Get unique services (returns: array of strings)
+                - "{count: .data | length, services: [.data[].attributes.service] | unique}" - Custom aggregation (returns: object)
+
+                Common jq patterns:
+                - Select: [.data[] | select(.attributes.status == "error")] - Wrap in [] for array output
+                - Map: [.data[] | .attributes.message] - Wrap in [] for array output
+                - Filter array: .data | map(select(.attributes.service == "api"))
+                - Count: .data | length
+                - Unique values: [.data[].attributes.service] | unique
+
+                Important: Filters that produce multiple outputs (like .data[]) should be wrapped in brackets [.data[]] to return a single array instead of multiple JSON values.
+
+                Security: jq expressions are sandboxed (no file system access)
+
+                jq docs: https://jqlang.github.io/jq/manual/
+                TEXT,
+            minLength: 1
+        )]
+        ?string $jq_filter = null,
+        #[Schema(
+            type: 'boolean',
+            description: <<<TEXT
+                Output raw text instead of JSON-encoded strings. Optional, defaults to false.
+
+                When true, adds the --raw-output (-r) flag to jq.
+                If the jq filter result is a string, it will be output as raw text without JSON quotes.
+                Useful for extracting plain text from log messages.
+
+                Examples:
+                - Extract plain message text: jq_filter=".data[0].attributes.message", jq_raw_output=true
+                - Get service names as plain text: jq_filter="[.data[].attributes.service] | unique | .[]", jq_raw_output=true, jq_streaming=true
+
+                Note: Only affects string outputs. Numbers, booleans, objects, and arrays are unaffected.
+                TEXT
+        )]
+        ?bool $jq_raw_output = false,
+        #[Schema(
+            type: 'boolean',
+            description: <<<TEXT
+                Collect multiple jq outputs into an array. Optional, defaults to false.
+
+                Some jq filters produce multiple JSON values (one per line) instead of a single value.
+                For example, ".data[]" outputs each log entry separately.
+
+                When jq_streaming=true, all outputs are collected into a single array.
+
+                Examples:
+                - Stream all logs: jq_filter=".data[]", jq_streaming=true
+                  Returns: [log1, log2, log3, ...]
+
+                - Stream filtered logs: jq_filter=".data[] | select(.attributes.service == \"api\")", jq_streaming=true
+                  Returns: [matching_log1, matching_log2, ...]
+
+                - Stream field values: jq_filter=".data[].attributes.service", jq_streaming=true
+                  Returns: ["service1", "service2", "service3", ...]
+
+                Without streaming mode, these filters would produce multiple separate JSON values,
+                which may cause parsing errors. Streaming mode collects them into a single array.
+
+                Note: If the filter produces a single value, streaming mode has no effect.
+                TEXT
+        )]
+        ?bool $jq_streaming = false
+    ): mixed {
         // Ensure time_range has a default value (handle null from MCP)
         $time_range = $time_range ?? '1h';
 
@@ -455,15 +532,25 @@ class LogsController
 
         // Handle different output formats
         if ($format === 'count') {
-            return $this->formatCount($response, $query, $time_range, $from, $to);
+            $response = $this->formatCount($response, $query, $time_range, $from, $to);
+        } elseif ($format === 'summary') {
+            $response = $this->formatSummary($response, $query, $time_range, $from, $to);
+        } else {
+            // Default: full format
+            $response = $this->filterTags($response, $includeTags ?? false);
         }
 
-        if ($format === 'summary') {
-            return $this->formatSummary($response, $query, $time_range, $from, $to);
+        // Apply jq filter if provided (works with any format)
+        if ($jq_filter !== null && trim($jq_filter) !== '') {
+            $response = $this->applyJqFilter(
+                $response,
+                $jq_filter,
+                $jq_raw_output ?? false,
+                $jq_streaming ?? false
+            );
         }
 
-        // Default: full format
-        return $this->filterTags($response, $includeTags ?? false);
+        return $response;
     }
 
     /**
@@ -678,5 +765,196 @@ class LogsController
         }
 
         return $response;
+    }
+
+    /**
+     * Applies jq filter to JSON data.
+     *
+     * @param  array  $data  The PHP array to filter
+     * @param  string  $jq_filter  The jq filter expression
+     * @param  bool  $raw_output  Output raw strings without JSON encoding
+     * @param  bool  $streaming  Collect multiple JSON values into an array
+     *
+     * @return mixed Returns any valid JSON value (array, object, string, number, boolean, or null)
+     *
+     * @throws RuntimeException
+     */
+    protected function applyJqFilter(array $data, string $jq_filter, bool $raw_output = false, bool $streaming = false): mixed
+    {
+        // Validate jq is available
+        $jq_path = $this->findJqBinary();
+        if ($jq_path === null) {
+            throw new RuntimeException(
+                'jq binary not found. Install with: apk add --no-cache jq'
+            );
+        }
+
+        // Encode data to JSON for jq processing
+        $json_input = json_encode(
+            $data,
+            JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+        );
+
+        // Prepare jq command with proper escaping (SECURITY CRITICAL)
+        $descriptor_spec = [
+            0 => ['pipe', 'r'],  // stdin
+            1 => ['pipe', 'w'],  // stdout
+            2 => ['pipe', 'w'],  // stderr
+        ];
+
+        // Build jq flags
+        $flags = [];
+        $flags[] = '--compact-output';  // Always use compact output for consistent line-by-line parsing
+        $flags[] = '--exit-status';
+        if ($raw_output) {
+            $flags[] = '--raw-output';
+        }
+
+        $command = sprintf(
+            '%s %s %s',
+            escapeshellarg($jq_path),           // Prevents path injection
+            implode(' ', $flags),                // Add flags
+            escapeshellarg($jq_filter)           // Prevents filter injection
+        );
+
+        $process = proc_open($command, $descriptor_spec, $pipes);
+
+        if (!is_resource($process)) {
+            throw new RuntimeException('Failed to execute jq command');
+        }
+
+        // Write JSON input to jq's stdin
+        fwrite($pipes[0], $json_input);
+        fclose($pipes[0]);
+
+        // Read jq's output
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+
+        $exit_code = proc_close($process);
+
+        // Handle jq errors with helpful messages
+        if ($exit_code !== 0) {
+            $error_message = match ($exit_code) {
+                5 => 'jq filter produced no output (empty result)',
+                4 => 'jq filter produced null output',
+                3, 2 => 'jq compile error - invalid filter syntax',
+                default => 'jq filter failed',
+            };
+
+            if (!empty($stderr)) {
+                $error_message .= ': '.trim($stderr);
+            }
+
+            throw new RuntimeException($error_message.sprintf(' (exit code: %d)', $exit_code));
+        }
+
+        // Parse jq output based on mode
+        if ($streaming) {
+            // Streaming mode: collect all JSON values (one per line) into array
+            return $this->parseStreamingOutput($stdout, $raw_output);
+        } else {
+            // Non-streaming mode: single value
+            if ($raw_output) {
+                // Raw output mode: return as-is (plain text)
+                return trim($stdout);
+            }
+
+            // JSON mode: decode the output
+            $result = json_decode($stdout, true);
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                throw new RuntimeException('Failed to decode jq output: '.json_last_error_msg());
+            }
+
+            return $result;
+        }
+    }
+
+    /**
+     * Parses streaming jq output (multiple JSON values, one per line).
+     *
+     * @param  string  $stdout  The stdout from jq
+     * @param  bool  $raw_output  Whether raw output mode is enabled
+     *
+     * @return array|string
+     *
+     * @throws RuntimeException
+     */
+    protected function parseStreamingOutput(string $stdout, bool $raw_output): array|string
+    {
+        $lines = array_filter(explode("\n", trim($stdout)), fn ($line) => $line !== '');
+
+        if (empty($lines)) {
+            return [];
+        }
+
+        // If only one line, decode as single value (not wrapped in array)
+        if (count($lines) === 1) {
+            if ($raw_output) {
+                // Raw output: return the string as-is
+                return $lines[0];
+            }
+
+            $result = json_decode($lines[0], true);
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                throw new RuntimeException('Failed to decode jq output: '.json_last_error_msg());
+            }
+
+            return $result;
+        }
+
+        // Multiple lines: collect into array
+        if ($raw_output) {
+            // Raw output: return array of strings
+            return $lines;
+        }
+
+        // JSON output: decode each line
+        $results = [];
+        foreach ($lines as $index => $line) {
+            $decoded = json_decode($line, true);
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                throw new RuntimeException(
+                    'Failed to decode jq streaming output line '.($index + 1).': '.json_last_error_msg().' | Line: '.$line
+                );
+            }
+            $results[] = $decoded;
+        }
+
+        return $results;
+    }
+
+    /**
+     * Finds the jq binary path.
+     *
+     * @return string|null
+     */
+    protected function findJqBinary(): ?string
+    {
+        // Try common paths
+        $possible_paths = [
+            '/usr/bin/jq',           // Alpine/Debian default
+            '/usr/local/bin/jq',     // macOS homebrew
+            '/opt/homebrew/bin/jq',  // macOS Apple Silicon
+        ];
+
+        foreach ($possible_paths as $path) {
+            if (file_exists($path) && is_executable($path)) {
+                return $path;
+            }
+        }
+
+        // Try PATH lookup
+        $which_result = shell_exec('which jq 2>/dev/null');
+        if ($which_result !== null && trim($which_result) !== '') {
+            $path = trim($which_result);
+            if (file_exists($path) && is_executable($path)) {
+                return $path;
+            }
+        }
+
+        return null;
     }
 }

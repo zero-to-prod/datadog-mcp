@@ -88,6 +88,109 @@ Search and retrieve logs from your Datadog account using the Logs API v2.
 - `limit` (int, optional) - Max logs per request, 1-1000 (default: 50)
 - `cursor` (string, optional) - Pagination cursor
 - `sort` (string, optional) - Sort order: "timestamp" or "-timestamp"
+- `jq_filter` (string, optional) - jq expression to transform response data
+
+**jq Filter Examples:**
+
+The `jq_filter` parameter allows you to transform the response data using jq syntax. The filter is applied AFTER format processing.
+
+1. Get only the first log entry:
+```json
+{
+  "time_range": "1h",
+  "query": "status:error",
+  "jq_filter": ".data[0]"
+}
+```
+
+2. Filter logs by service:
+```json
+{
+  "time_range": "24h",
+  "query": "env:production",
+  "jq_filter": ".data[] | select(.attributes.service == \"api\")"
+}
+```
+
+3. Extract only message fields:
+```json
+{
+  "time_range": "1h",
+  "query": "status:error",
+  "jq_filter": "[.data[].attributes.message]"
+}
+```
+
+4. Custom aggregation:
+```json
+{
+  "time_range": "24h",
+  "query": "status:error",
+  "jq_filter": "{total: .data | length, services: [.data[].attributes.service] | unique}"
+}
+```
+
+For full jq syntax documentation, see: https://jqlang.github.io/jq/manual/
+
+**Raw Output Examples:**
+
+Extract plain text message (without JSON quotes):
+```json
+{
+  "time_range": "1h",
+  "query": "status:error",
+  "limit": 1,
+  "jq_filter": ".data[0].attributes.message",
+  "jq_raw_output": true
+}
+```
+
+Get service names as plain text lines:
+```json
+{
+  "time_range": "1h",
+  "query": "status:info",
+  "limit": 10,
+  "jq_filter": ".data[].attributes.service",
+  "jq_raw_output": true,
+  "jq_streaming": true
+}
+```
+
+**Streaming Examples:**
+
+Get all logs as array (natural .data[] syntax):
+```json
+{
+  "time_range": "1h",
+  "query": "status:info",
+  "limit": 10,
+  "jq_filter": ".data[]",
+  "jq_streaming": true
+}
+```
+
+Extract all service names:
+```json
+{
+  "time_range": "1h",
+  "query": "status:info",
+  "limit": 10,
+  "jq_filter": ".data[].attributes.service",
+  "jq_streaming": true
+}
+```
+
+Filter logs by service (streaming):
+```json
+{
+  "time_range": "24h",
+  "query": "env:production",
+  "limit": 50,
+  "jq_filter": ".data[] | select(.attributes.service == \"api\")",
+  "jq_streaming": true
+}
+```
 
 **Example Query:**
 ```

@@ -1,11 +1,15 @@
 FROM dunglas/frankenphp:1-php8.4-alpine AS build
 
+RUN apk add --no-cache jq
+
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 COPY composer.json composer.lock /app/
 
 RUN composer install --no-dev --optimize-autoloader
 
 FROM dunglas/frankenphp:1-php8.4-alpine AS production
+
+RUN apk add --no-cache jq
 
 ARG VERSION=1.0.0
 ENV APP_VERSION=$VERSION
