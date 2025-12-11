@@ -20,430 +20,124 @@ class LogsController
     #[McpTool(
         name: 'logs',
         description: <<<TEXT
-            Searches Datadog logs with comprehensive filtering and pagination support.
-            This tool retrieves logs from your Datadog account using the Logs API v2. It supports time-based filtering,
-            full-text search queries, pagination, and optional tag filtering. The API uses cursor-based pagination for
-            efficient traversal of large result sets.
+            Search Datadog logs with time-based filtering, full-text queries, and pagination.
 
-            ═══════════════════════════════════════════════════════════════════════════════
-            QUICK START (Read This First!)
-            ═══════════════════════════════════════════════════════════════════════════════
+            ## Critical Rules
+            - Reserved attributes (NO @): service, env, status, host, source, version, trace_id
+            - Custom attributes (@ REQUIRED): @http.status_code, @user.id, @duration, @error.message, etc.
+            - Timestamps: MUST be milliseconds (multiply Unix seconds × 1000)
+            - Boolean operators: UPPERCASE only (AND, OR, NOT)
+            - Wildcards: * (multi-char), ? (single-char)
+            - Attribute names are case-sensitive
 
-            Basic workflow:
-            1. Calculate time range in milliseconds:
-               from = currentTimeMillis - 3600000  // 1 hour ago
-               to = currentTimeMillis
+            ## Common Query Patterns
+            "Show errors in production" → env:production status:error (last 1h)
+            "Find slow API requests" → service:api @duration:>3000 (last 1h)
+            "500 errors" → @http.status_code:>=500 (last 1h)
+            "User errors" → @user.id:12345 status:error (last 24h)
+            "Database issues" → service:database status:error (last 1h)
+            "Payment failures yesterday" → service:payment status:error (yesterday)
 
-            2. Construct query with service and status:
-               query = "service:YOUR_SERVICE status:error"
+            ## Syntax Quick Reference
 
-            3. Call tool with moderate limit:
-               logs(from, to, query, includeTags=false, limit=50)
+            Reserved (no @):
+            service:api-gateway | env:production | status:error | host:web-01 | source:docker | version:1.2.3
 
-            4. Check response:
-               - response.data[] contains log entries
-               - response.meta.page.after = cursor for next page (null if done)
+            Custom (need @):
+            @http.status_code:500 | @user.email:user@example.com | @duration:>3000 | @error.message:"timeout"
 
-            5. Interpret and summarize results for the user
+            Boolean:
+            service:api AND status:error
+            env:prod OR env:staging
+            status:error -service:health-check (exclude)
+            (service:api OR service:worker) AND status:error
 
-            MOST COMMON MISTAKES:
-            - Forgetting @ prefix on custom attributes (@http.status_code NOT http.status_code)
-            - Using seconds instead of milliseconds for timestamps
-            - Using lowercase boolean operators (must be AND/OR/NOT, not and/or/not)
-            - Not quoting values with spaces or special characters
-
-            ═══════════════════════════════════════════════════════════════════════════════
-            MCP TOOL USAGE NOTES
-            ═══════════════════════════════════════════════════════════════════════════════
-
-            This tool is designed for MCP (Model Context Protocol) where YOU (the LLM) should:
-            - Calculate timestamps programmatically - users say "last hour", not epoch milliseconds
-            - Translate user intent into proper Datadog query syntax
-            - Interpret results and present insights in human-readable format
-            - Summarize patterns, not dump raw JSON
-            - Handle pagination automatically when more data is needed
-            - Inform users about data volume before fetching thousands of logs
-
-            Think of yourself as a Datadog expert helping non-technical users understand their logs.
-
-            ═══════════════════════════════════════════════════════════════════════════════
-            USER INTENT → QUERY TRANSLATION
-            ═══════════════════════════════════════════════════════════════════════════════
-
-            Common requests and how to translate them:
-
-            "Show me errors in production"
-            → query: "env:production status:error"
-            → time: Last 1 hour
-
-            "Find slow API requests"
-            → query: "service:api @duration:>3000"
-            → time: Last 1 hour
-
-            "What happened around 2pm today?"
-            → query: Based on context (service, status if mentioned)
-            → time: Calculate 1:30pm-2:30pm in milliseconds
-
-            "Errors for user 12345"
-            → query: "@user.id:12345 status:error"
-            → time: Last 24 hours (or based on context)
-
-            "Database issues in the last hour"
-            → query: "service:database status:error"
-            → time: Last 1 hour
-
-            "Payment failures yesterday"
-            → query: "service:payment status:error"
-            → time: Yesterday (start of day to end of day)
-
-            "All logs from checkout service"
-            → query: "service:checkout"
-            → time: Last 1 hour (be cautious with time range on broad queries)
-
-            "500 errors in production"
-            → query: "env:production @http.status_code:500"
-            → time: Last 1 hour
-
-            "Timeout errors across all services"
-            → query: "status:error \"timeout\""
-            → time: Last 1-4 hours
-
-            DECISION TREE:
-
-            1. Is a specific service mentioned?
-               YES → Add service:SERVICE_NAME
-               NO → Check if environment mentioned
-
-            2. Is user asking about errors/problems?
-               YES → Add status:error (or status:warn for warnings)
-               NO → Continue
-
-            3. Is a specific user/entity mentioned?
-               YES → Add @entity.id:VALUE or @user.email:EMAIL
-               NO → Continue
-
-            4. Is performance/speed mentioned?
-               YES → Add @duration:>THRESHOLD (e.g., @duration:>3000 for 3+ seconds)
-               NO → Continue
-
-            5. What time range?
-               "now" / "current" → Last 15 minutes
-               "recent" / "latest" → Last 1 hour
-               "today" → Last 24 hours
-               "yesterday" → Previous day (midnight to midnight)
-               Specific time → Calculate 30min-1hr window around that time
-
-            ═══════════════════════════════════════════════════════════════════════════════
-            QUERY SYNTAX RULES
-            ═══════════════════════════════════════════════════════════════════════════════
-
-            Reserved Attributes (NO @ prefix required):
-            - service: Application/service name (e.g., service:api-gateway)
-            - env: Environment (e.g., env:production, env:staging)
-            - status: Log level (e.g., status:error, status:warn, status:info)
-            - host: Server/container hostname (e.g., host:web-server-01)
-            - source: Log source (e.g., source:docker, source:nginx)
-            - version: Application version (e.g., version:1.2.3)
-            - trace_id: Distributed trace ID
-
-            Custom Attributes (@ prefix REQUIRED):
-            - Use @ for any non-reserved attribute (e.g., @http.status_code:500, @user.email:john@example.com)
-            - Attribute searches are CASE-SENSITIVE
-            - Use dot notation for nested attributes (e.g., @http.response.status_code:200)
+            Numerical:
+            @http.status_code:>=500 | @duration:>5000 | @http.status_code:[400 TO 499]
 
             Wildcards:
-            - * = Multi-character wildcard (e.g., service:web-* matches web-api, web-frontend)
-            - ? = Single character wildcard (e.g., @my_attr:hello?world matches "hello world" or "hello_world")
-            - Wildcards only work OUTSIDE double quotes
+            service:web-* | @user.email:*@example.com
 
-            Boolean Operators (must be UPPERCASE):
-            - AND: Both conditions must match (e.g., service:api AND status:error)
-            - OR: Either condition matches (e.g., env:prod OR env:staging)
-            - NOT or -: Exclude logs (e.g., service:api NOT status:debug OR service:api -status:debug)
-            - Parentheses for grouping (e.g., service:api AND (status:error OR status:warn))
-            - Implicit AND: Space between terms acts as AND (e.g., "service:api status:error" = "service:api AND status:error")
+            ## Common Attributes (all need @)
+            HTTP: @http.status_code, @http.method, @http.url, @http.request_id
+            User: @user.id, @user.email, @user.name, @user.country
+            Performance: @duration (ms), @response_time, @db.statement.duration
+            Error: @error.message, @error.kind, @error.stack, @error.code
+            Transaction: @transaction.id, @transaction.amount, @transaction.status
+            Deployment: @deployment.version, @deployment.canary, @container.name
 
-            Numerical Operators (faceted attributes only):
-            - <, >, <=, >= for numerical comparisons (e.g., @http.status_code:>=400, @duration:>1000)
-            - Range syntax: @attribute:[min TO max] (e.g., @http.status_code:[400 TO 499])
+            ## Query Examples by Complexity
 
-            Special Characters & Escaping:
-            - Special chars in values require escaping OR double quotes
-            - With escaping: @my_attr:hello\:world (for value "hello:world")
-            - With quotes: @my_attr:"hello:world" (for value "hello:world")
-            - Quotes required for: colons, spaces, special symbols in attribute values
+            Basic:
+            service:api status:error
+            env:production status:warn
+            status:error "timeout"
 
-            Free-Text Search:
-            - Unquoted text searches across all fields (case-INSENSITIVE)
-            - Quoted phrases for exact matching: "database connection failed"
-            - Combine with facets: service:api "timeout error"
+            With Attributes:
+            service:api @http.status_code:500
+            service:checkout @duration:>5000
+            @user.email:*@example.com status:error
 
-            TIME RANGE:
-            - from/to parameters use epoch timestamps in milliseconds
-            - Maximum range depends on your Datadog retention plan
+            Complex:
+            (service:api OR service:worker) AND status:error
+            service:payment env:prod status:error @transaction.amount:>1000
+            env:prod AND -@deployment.canary:true AND @http.status_code:>=500
 
-            TAGS:
-            - Tags excluded by default to reduce response size (can be 100+ per log)
-            - Set includeTags:true only when needed for tag analysis
-
-            PAGINATION:
-            - Cursor-based (not offset-based)
-            - First request: omit cursor parameter
-            - Next pages: use cursor from previous response's meta.page.after
-            - Last page: when meta.page.after is null/empty
-            - API maximum: 1000 logs per request
-
-            QUERY EXAMPLES:
-
-            Basic filtering:
-            - "service:payment-api status:error" - Errors from payment API
-            - "env:production status:warn" - Production warnings
-            - "service:checkout @http.status_code:500" - HTTP 500s from checkout service
-
-            Wildcards:
-            - "service:web-* env:prod" - All web services in production
-            - "@user.email:*@example.com" - Logs with example.com email addresses
-
-            Boolean logic:
-            - "service:api AND (status:error OR status:warn)" - API errors or warnings
-            - "env:prod AND -service:health-check" - Production excluding health checks
-            - "(service:api OR service:worker) AND status:error" - Errors from API or worker
-
-            Numerical filtering:
-            - "@http.status_code:>=500" - Server errors (5xx)
-            - "@duration:>5000 service:api" - API requests taking over 5 seconds
-            - "@http.status_code:[400 TO 499]" - Client errors (4xx range)
-
-            Complex queries:
-            - "service:payment env:prod status:error @transaction.amount:>1000" - High-value payment errors
-            - "(service:api OR service:worker) AND env:prod AND -@deployment.canary:true" - Prod non-canary errors
-            - "service:checkout @user.country:US \"payment declined\"" - US payment declines with specific text
-
-            Special characters:
-            - "@error.message:\"connection: timeout\"" - Error message with colon (quoted)
-            - "@url.path:/api/v1/users" - URL paths with slashes (no quotes needed)
-            - "service:my-service @key:\"value with spaces\"" - Values containing spaces
-
-            COMMON USE CASES:
-            - Error dashboard: query: "status:error", limit: 100
-            - Service health: query: "service:my-service env:prod status:error"
-            - Slow requests: query: "service:api @duration:>3000"
-            - Failed transactions: query: "@transaction.status:failed @amount:>100"
-            - User activity: query: "@user.id:12345 service:api"
-            - Deployment issues: query: "env:prod @deployment.version:v2.1.0 status:error"
-
-            ═══════════════════════════════════════════════════════════════════════════════
-            COMMON ATTRIBUTE PATTERNS
-            ═══════════════════════════════════════════════════════════════════════════════
-
-            These are typical custom attributes you'll find in logs (all require @ prefix):
-
-            HTTP/API Attributes:
-            - @http.status_code: HTTP response codes (200, 404, 500, etc.)
-            - @http.method: HTTP method (GET, POST, PUT, DELETE, PATCH)
-            - @http.url: Full request URL
-            - @http.url_details.path: URL path only (/api/v1/users)
-            - @http.url_details.queryString: Query parameters
-            - @http.useragent: Client user agent string
-            - @http.referer: HTTP referer header
-            - @http.request_id: Unique request identifier
-            - @network.client.ip: Client IP address
-            - @network.bytes_read: Bytes received
-            - @network.bytes_written: Bytes sent
-
-            User/Identity Attributes:
-            - @user.id: User identifier (numeric or string)
-            - @user.email: User email address
-            - @user.name: User display name
-            - @user.role: User role (admin, user, guest)
-            - @user.country: User country code
-            - @user.session_id: Session identifier
-            - @usr.id: Alternative user ID field (some integrations)
-
-            Performance/Timing Attributes:
-            - @duration: Request/operation duration in milliseconds
-            - @duration_ns: Duration in nanoseconds
-            - @db.statement.duration: Database query duration
-            - @response_time: Response time in milliseconds
-
-            Database Attributes:
-            - @db.statement: SQL query or statement
-            - @db.operation: Operation type (SELECT, INSERT, UPDATE, DELETE)
-            - @db.instance: Database instance name
-            - @db.user: Database username
-            - @db.row_count: Number of rows affected
-
-            Error Attributes:
-            - @error.message: Error message text
-            - @error.kind: Error type/class
-            - @error.stack: Stack trace
-            - @error.code: Error code (numeric or string)
-            - @exception.type: Exception class name
-            - @exception.message: Exception message
-
-            Transaction/Business Attributes:
-            - @transaction.id: Transaction identifier
-            - @transaction.amount: Transaction value
-            - @transaction.currency: Currency code (USD, EUR)
-            - @transaction.status: Status (success, failed, pending, cancelled)
-            - @order.id: Order identifier
-            - @payment.method: Payment method (credit_card, paypal)
-
-            Deployment/Infrastructure Attributes:
-            - @deployment.version: Application version
-            - @deployment.environment: Deployment environment
-            - @deployment.canary: Canary deployment flag (true/false)
-            - @container.id: Container identifier
-            - @container.name: Container name
-            - @kubernetes.pod_name: Kubernetes pod name
-            - @kubernetes.namespace: Kubernetes namespace
-
-            Security Attributes:
-            - @auth.user_id: Authenticated user ID
-            - @auth.method: Authentication method (oauth, jwt, basic)
-            - @security.threat_type: Threat classification
-            - @security.blocked: Whether request was blocked (true/false)
-
-            Custom Business Logic:
-            - Any attribute not listed above requires @ prefix
-            - Use dot notation for nested fields: @custom.nested.field
-            - Remember: attribute names are CASE-SENSITIVE
-
-            Example queries with common attributes:
-            - "service:api @http.status_code:>=500" - Server errors
-            - "@user.email:*@example.com status:error" - Errors for example.com users
-            - "service:payment @transaction.amount:>1000 @transaction.status:failed" - High-value payment failures
-            - "@duration:>5000 service:api" - Slow API requests (>5 seconds)
-            - "@error.kind:TimeoutException" - Specific exception type
-            - "@deployment.canary:true status:error" - Canary deployment errors
-
-            RESPONSE STRUCTURE:
+            ## Response Structure
             {
-              "data": [
-                {
-                  "id": "AQAAAYxL...",
-                  "type": "log",
-                  "attributes": {
-                    "timestamp": "2025-01-09T10:30:45.123Z",
-                    "service": "api-gateway",
-                    "status": "error",
-                    "message": "Connection timeout",
-                    "host": "web-01",
-                    "@http.status_code": 500,
-                    "@user.id": "12345"
-                  }
-                }
-              ],
-              "meta": {
-                "page": {
-                  "after": "eyJhZnRlciI6..."  // Pagination cursor, null when done
-                }
-              }
+              "data": [{"id": "...", "attributes": {"timestamp": "...", "message": "...", "service": "..."}}],
+              "meta": {"page": {"after": "cursor_or_null"}}
             }
 
-            TIMESTAMP HELPERS (all times in milliseconds):
-            - Current time: Date.now() or time() * 1000
-            - Last hour: from = now() - 3600000, to = now()
-            - Last 24 hours: from = now() - 86400000, to = now()
-            - Last 7 days: from = now() - 604800000, to = now()
-            - Last 15 minutes: from = now() - 900000, to = now()
-            - Conversions: 1 second = 1000ms, 1 minute = 60000ms, 1 hour = 3600000ms, 1 day = 86400000ms
-            - CRITICAL: Always milliseconds (13 digits), not seconds. Multiply Unix timestamps by 1000.
+            ## Timestamps (milliseconds)
+            now = Date.now()
+            1h_ago = now - 3600000
+            24h_ago = now - 86400000
+            7d_ago = now - 604800000
+            15min_ago = now - 900000
 
-            COMPLETE WORKFLOW EXAMPLE - Finding Production Errors:
-            Step 1: Calculate time range
-              from = currentTime - 3600000  // 1 hour ago
-              to = currentTime
-            Step 2: Construct query
-              query = "env:production status:error"
-            Step 3: Execute with moderate limit
-              limit = 50, cursor = null
-            Step 4: Interpret response
-              - Empty data[]: No errors found in time range
-              - Has data[]: Analyze patterns (check attributes.message, attributes.service)
-              - Check meta.page.after: If not null, more results available
-            Step 5: Pagination (if needed)
-              - Extract cursor = response.meta.page.after
-              - Call again with same params + cursor
-              - Repeat until meta.page.after is null
+            Conversions: 1sec=1000ms, 1min=60000ms, 1hr=3600000ms, 1day=86400000ms
 
-            PAGINATION BEST PRACTICES:
-            - Check meta.page.after: null = last page, non-null = more data exists
-            - Reuse ALL original parameters (from, to, query, limit) with new cursor
-            - Limit iterations (max 3-5 pages) unless user explicitly wants all data
-            - Inform user before fetching large datasets
-            - Cursors expire in 1-5 minutes, don't store long-term
+            ## Pagination
+            First request: cursor = null
+            Next pages: cursor = response.meta.page.after
+            Last page: response.meta.page.after is null
+            Reuse all params (from, to, query, limit) with new cursor
 
-            COMMON ERRORS & SOLUTIONS:
+            ## Workflow
+            1. Calculate timestamps: from = now() - 3600000, to = now()
+            2. Build query: "service:api status:error"
+            3. Call with limit=50
+            4. Check response.data[] for logs
+            5. If response.meta.page.after exists, more data available
 
-            "Parameter 'from' must be less than 'to'":
-            - Fix: Verify from < to, check timestamp order
+            ## MCP Usage Notes
+            YOU (the LLM) should:
+            - Calculate timestamps programmatically (users say "last hour" not epoch millis)
+            - Translate user intent to Datadog syntax
+            - Summarize patterns, not raw JSON dumps
+            - Present insights in human-readable format
 
-            "DD_API_KEY environment variable is not set":
-            - This is configuration issue, inform user to set credentials
+            ## Common Errors
+            "from must be less than to" → Verify timestamp order
+            "HTTP 400" → Check @ prefix on custom attrs, UPPERCASE operators, query syntax
+            Empty results → Query too restrictive, verify service names, expand time range
+            Wrong logs → Verify @ prefix usage (custom=@, reserved=no @)
 
-            "HTTP 400 - Bad Request":
-            - Causes: Invalid query syntax, missing @ on custom attributes, lowercase boolean operators
-            - Fix: Verify @ prefix on custom attributes, uppercase AND/OR/NOT, simplify query
+            ## Performance Tips
+            - Start with service/env filters to narrow scope
+            - Use status:error or status:warn for issue-focused queries
+            - Start with limit=50, increase if needed
+            - Keep includeTags=false unless needed (tags add 100+ items per log)
+            - Avoid time ranges >24h without filters
 
-            Empty results (data = []):
-            - Query might be too restrictive
-            - Try: Broader query, verify service names, expand time range
-            - Debug: Start with just service:name, add filters incrementally
-
-            Query returns wrong logs:
-            - Check @ prefix: custom attributes NEED @, reserved attributes NEED NO @
-            - Verify case: custom attribute names are case-sensitive
-            - Check operators: Must be UPPERCASE (AND not and)
-
-            RESULT INTERPRETATION GUIDE:
-
-            When summarizing results for users:
-            1. Key statistics: Count (data.length), time range, services affected
-            2. Patterns: Common error messages, error spikes at specific times
-            3. Sample logs: Show 2-3 representative entries with timestamp, service, message, key attributes
-            4. Actionable insights: "47 errors in payment-api 10:30-11:00", "Most common: Database timeout (23x)"
-            5. Pagination status: "Showing first 50 results, more available" if meta.page.after exists
-
-            PERFORMANCE OPTIMIZATION:
-
-            Query cost factors (high to low impact):
-            - Time range: Wider = slower (limit to smallest range needed)
-            - Filter specificity: service/env filters significantly reduce scan
-            - includeTags: false = much smaller response
-            - limit: Lower = faster (test with 10-50 first)
-
-            Expensive query red flags:
-            - Time range > 24h without service/env filter
-            - No status filter (includes verbose debug logs)
-            - Broad wildcards: service:* or missing service filter
-            - limit=1000 + includeTags=true = massive response
-
-            Optimization strategy:
-            1. Always start with service and/or env filter
-            2. Add status:error or status:warn to focus on issues
-            3. Use smallest time range that answers question
-            4. Start with limit=50, increase only if needed
-            5. Keep includeTags=false unless analyzing tags
-
-            Best practice: Start restrictive, expand gradually
-
-            QUERY DEBUGGING CHECKLIST:
-
-            If query returns unexpected results:
-            1. Verify @ prefix usage (custom attrs need @, reserved attrs don't)
-            2. Check boolean operators are UPPERCASE (AND, OR, NOT)
-            3. Simplify: Start with "service:name", add filters one by one
-            4. Test time range: Try last hour to verify query logic works
-            5. Check special chars: Use quotes for spaces/colons in values
-            6. Verify attribute names: Check case sensitivity on custom attributes
-
-            WARNING:
-            - Responses can be VERY large (especially with includeTags:true)
-            - Keep queries focused to avoid overwhelming responses
-            - Use pagination for large result sets
-            - Avoid broad time ranges without specific filters
-            - Test with small limit values first (10-50)
+            ## Result Interpretation
+            When presenting to users:
+            - Count: "Found 47 errors"
+            - Time range: "10:30-11:00 UTC"
+            - Services: "Affected: payment-api, checkout"
+            - Patterns: "Most common: Database timeout (23x)"
+            - Show 2-3 sample log entries with key fields
             TEXT,
         annotations: new ToolAnnotations(
             title: 'Datadog Logs Search',
