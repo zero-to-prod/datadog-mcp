@@ -22,8 +22,15 @@ class LogsController
         description: <<<TEXT
             Search Datadog logs with time-based filtering, full-text queries, and pagination.
 
-            CRITICAL: Calculate timestamps for year current year.
-            Using wrong year = empty results. Timestamps must be milliseconds (13 digits).
+            ## Time Range Options
+            **EASY MODE**: Use time_range parameter with simple strings: "1h", "24h", "7d"
+            **ADVANCED**: Use from/to parameters with millisecond timestamps for precise control
+
+            Examples with time_range:
+            - time_range="1h" → Last 1 hour (recommended for most queries)
+            - time_range="24h" → Last 24 hours
+            - time_range="7d" → Last 7 days
+            - time_range="15m" → Last 15 minutes
 
             ## Critical Rules
             - Reserved attributes (NO @): service, env, status, host, source, version, trace_id
@@ -107,16 +114,21 @@ class LogsController
             Last page: response.meta.page.after is null
             Reuse all params (from, to, query, limit) with new cursor
 
-            ## Workflow
-            1. Calculate timestamps: from = now() - 3600000, to = now()
+            ## Workflow (Recommended)
+            1. Use time_range: time_range="1h" (much easier!)
             2. Build query: "service:api status:error"
             3. Call with limit=10
             4. Check response.data[] for logs
             5. If response.meta.page.after exists, more data available
 
+            Alternative (Advanced):
+            1. Calculate timestamps: from = now() - 3600000, to = now()
+            2-5. Same as above
+
             ## MCP Usage Notes
             YOU (the LLM) should:
-            - Calculate timestamps programmatically (users say "last hour" not epoch millis)
+            - PREFER time_range parameter ("1h", "24h", "7d") over calculating timestamps
+            - Only use from/to for precise time windows (e.g., specific incident times)
             - Translate user intent to Datadog syntax
             - Summarize patterns, not raw JSON dumps
             - Present insights in human-readable format
@@ -161,27 +173,51 @@ class LogsController
     )]
     public function logs(
         #[Schema(
-            type: 'integer',
+            type: 'string',
             description: <<<TEXT
-                Start timestamp in milliseconds (epoch time). Required.
-                Defines the minimum timestamp for logs to retrieve.
-                Example: 1764696580317 (represents 2025-01-02 12:03:00 UTC)
-                Tip: Generate with: (new DateTime('2025-01-02 12:03:00'))->getTimestamp() * 1000
+                Relative time range (alternative to from/to). Optional.
+                Automatically calculates timestamps from now going back in time.
+
+                Supported formats:
+                - "15m" or "15min" - Last 15 minutes
+                - "1h" or "1hr" - Last 1 hour
+                - "24h" - Last 24 hours
+                - "7d" or "7day" - Last 7 days
+                - "30d" - Last 30 days
+
+                Examples: "1h", "24h", "7d"
+
+                Note: Use either time_range OR (from + to), not both.
                 TEXT,
-            minimum: 0
+            pattern: '^\\d+[mhdMHD](?:in|hr|ay)?$'
         )]
-        int $from,
+        ?string $time_range = null,
         #[Schema(
             type: 'integer',
             description: <<<TEXT
-                End timestamp in milliseconds (epoch time). Required.
-                Defines the maximum timestamp for logs to retrieve. Must be greater than \$from parameter.
-                Example: 1765301380317 (represents 2025-01-09 12:03:00 UTC)
-                Maximum time range: Limited by your Datadog plan (typically 15 minutes to 7 days)
+                Start timestamp in milliseconds (epoch time). Optional if time_range provided.
+                Defines the minimum timestamp for logs to retrieve.
+                Example: 1764696580317 (represents 2025-01-02 12:03:00 UTC)
+                Tip: Generate with: (new DateTime('2025-01-02 12:03:00'))->getTimestamp() * 1000
+
+                Note: Use either time_range OR (from + to), not both.
                 TEXT,
             minimum: 0
         )]
-        int $to,
+        ?int $from = null,
+        #[Schema(
+            type: 'integer',
+            description: <<<TEXT
+                End timestamp in milliseconds (epoch time). Optional if time_range provided.
+                Defines the maximum timestamp for logs to retrieve. Must be greater than \$from parameter.
+                Example: 1765301380317 (represents 2025-01-09 12:03:00 UTC)
+                Maximum time range: Limited by your Datadog plan (typically 15 minutes to 7 days)
+
+                Note: Use either time_range OR (from + to), not both.
+                TEXT,
+            minimum: 0
+        )]
+        ?int $to = null,
         #[Schema(
             type: 'string',
             description: <<<TEXT
@@ -322,6 +358,20 @@ class LogsController
         )]
         ?string $sort = null
     ): array {
+        // Validate parameter combinations
+        if ($time_range !== null && ($from !== null || $to !== null)) {
+            throw new RuntimeException('Cannot use both time_range and from/to parameters. Use either time_range OR (from + to).');
+        }
+
+        if ($time_range === null && ($from === null || $to === null)) {
+            throw new RuntimeException('Must provide either time_range OR both from and to parameters.');
+        }
+
+        // Parse time_range if provided
+        if ($time_range !== null) {
+            [$from, $to] = $this->parseTimeRange($time_range);
+        }
+
         if ($from >= $to) {
             throw new RuntimeException('Parameter "from" must be less than "to"');
         }
@@ -422,6 +472,43 @@ class LogsController
         }
 
         return $decoded ?? [];
+    }
+
+    /**
+     * Parses relative time range string and returns [from, to] timestamps in milliseconds.
+     *
+     * @param  string  $time_range
+     *
+     * @return array{int, int}
+     */
+    protected function parseTimeRange(string $time_range): array
+    {
+        // Parse the time range format: digits + unit (m/h/d) + optional suffix (in/hr/ay)
+        if (!preg_match('/^(\d+)([mhdMHD])(?:in|hr|ay)?$/', $time_range, $matches)) {
+            throw new RuntimeException('Invalid time_range format. Expected format: "1h", "24h", "7d", "15m", etc.');
+        }
+
+        $value = (int) $matches[1];
+        $unit = strtolower($matches[2]);
+
+        // Convert to milliseconds
+        $milliseconds_map = [
+            'm' => 60_000,      // 1 minute = 60,000ms
+            'h' => 3_600_000,   // 1 hour = 3,600,000ms
+            'd' => 86_400_000,  // 1 day = 86,400,000ms
+        ];
+
+        if (!isset($milliseconds_map[$unit])) {
+            throw new RuntimeException('Invalid time unit. Supported units: m (minutes), h (hours), d (days)');
+        }
+
+        $offset_ms = $value * $milliseconds_map[$unit];
+
+        // Calculate timestamps: from = now - offset, to = now
+        $now_ms = (int) (microtime(true) * 1000);
+        $from_ms = $now_ms - $offset_ms;
+
+        return [$from_ms, $now_ms];
     }
 
     /**
