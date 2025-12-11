@@ -110,7 +110,7 @@ class LogsController
             ## Workflow
             1. Calculate timestamps: from = now() - 3600000, to = now()
             2. Build query: "service:api status:error"
-            3. Call with limit=50
+            3. Call with limit=10
             4. Check response.data[] for logs
             5. If response.meta.page.after exists, more data available
 
@@ -142,7 +142,7 @@ class LogsController
             ## Performance Tips
             - Start with service/env filters to narrow scope
             - Use status:error or status:warn for issue-focused queries
-            - Start with limit=50, increase if needed
+            - Start with limit=10, increase if needed
             - Keep includeTags=false unless needed (tags add 100+ items per log)
             - Avoid time ranges >24h without filters
 
@@ -287,9 +287,9 @@ class LogsController
                 Maximum number of logs to return per request. Optional.
                 Default: 10 (if not specified)
                 Maximum: 1000 (API enforced limit)
-                Use smaller values (10-50) for faster responses
+                Use smaller values (10-20) for faster responses
                 Use larger values (100-1000) to reduce number of pagination requests
-                Example: 100, 500, 1000
+                Example: 10, 50, 1000
                 TEXT,
             minimum: 1,
             maximum: 1000
