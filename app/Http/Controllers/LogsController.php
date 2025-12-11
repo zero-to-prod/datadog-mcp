@@ -22,6 +22,23 @@ class LogsController
         description: <<<TEXT
             Search Datadog logs with time-based filtering, full-text queries, and pagination.
 
+            ## RECOMMENDED USAGE PATTERN
+
+            ⚠️ IMPORTANT: Always start small and iterate. Never request >20 logs without jq filtering.
+
+            ### Investigation Workflow:
+            1. **Scope check**: Use `format: "count"` to validate query and understand data volume
+            2. **Sample**: Get 5-10 logs with simple jq to preview structure and fields
+            3. **Aggregate**: Use jq group_by/map for patterns (limit: 20-50 when grouping)
+            4. **Extract**: Use json_path or simple jq for specific values (limit: 1-5)
+
+            ### Token Optimization:
+            - ✅ Small limits (5-20) + jq filtering = ~1,000-5,000 tokens per query
+            - ❌ Large limits (50+) without filtering = 50,000-100,000 tokens (truncation risk!)
+
+            Real-world example: Investigating an error went from 80,000+ tokens (full logs)
+            to ~5,000 tokens (94% reduction) using this pattern with jq filters.
+
             ## USER INTENT MAPPING
 
             "Show me errors" / "Find errors":
@@ -102,6 +119,51 @@ class LogsController
 
             No more timestamp calculations, no more seconds vs milliseconds confusion!
 
+            ## COMMON JQ FILTER RECIPES
+
+            **Get Timeline Summary** (avoid token bloat):
+            {
+              "limit": 20,
+              "jq_filter": ".data | map({time: .attributes.timestamp, status: .attributes.status, service: .attributes.service})"
+            }
+
+            **Preview Messages** (truncate long text):
+            {
+              "limit": 10,
+              "jq_filter": ".data[] | {time: .attributes.timestamp, message: .attributes.message[0:200]}",
+              "jq_streaming": true
+            }
+
+            **Group by Status**:
+            {
+              "limit": 50,
+              "jq_filter": ".data | group_by(.attributes.status) | map({status: .[0].attributes.status, count: length, first_seen: .[0].attributes.timestamp, last_seen: .[-1].attributes.timestamp})"
+            }
+
+            **Group by Service**:
+            {
+              "limit": 50,
+              "jq_filter": ".data | group_by(.attributes.service) | map({service: .[0].attributes.service, count: length})"
+            }
+
+            **Extract Error Details** (simple fields):
+            {
+              "limit": 1,
+              "json_path": "data.0.attributes.context.exception.file"
+            }
+
+            **Get Unique Values**:
+            {
+              "limit": 100,
+              "jq_filter": "[.data[].attributes.service] | unique"
+            }
+
+            **Time-based Bucketing** (hourly aggregation):
+            {
+              "limit": 50,
+              "jq_filter": ".data | group_by(.attributes.timestamp[0:13]) | map({hour: .[0].attributes.timestamp[0:13], count: length})"
+            }
+
             ## Severity Levels (status: attribute)
             Filter logs by severity using status:LEVEL:
             - status:error - Error conditions (most common for troubleshooting)
@@ -118,11 +180,99 @@ class LogsController
             "User errors" → user.id:12345 status:error (@ added automatically)
             "Multiple conditions" → service:api and status:error (uppercased automatically)
 
+            ## REAL-WORLD INVESTIGATION EXAMPLES
+
+            **Example 1: Investigate Error by Order ID**
+
+            Step 1 - Scope check (how many logs exist?):
+            {
+              "query": "112-9358172-3374603",
+              "time": "24h",
+              "format": "count"
+            }
+            // Response: {"count": 10} ← Confirms data exists
+
+            Step 2 - Sample structure (what do these logs look like?):
+            {
+              "query": "112-9358172-3374603",
+              "time": "24h",
+              "limit": 5,
+              "jq_filter": ".data[] | {time: .attributes.timestamp, service: .attributes.service, status: .attributes.status}",
+              "jq_streaming": true
+            }
+
+            Step 3 - Get the error (specific investigation):
+            {
+              "query": "112-9358172-3374603 status:error",
+              "time": "24h",
+              "limit": 1
+            }
+
+            Step 4 - Extract error details (specific field):
+            {
+              "query": "112-9358172-3374603 status:error",
+              "time": "24h",
+              "limit": 1,
+              "json_path": "data.0.attributes.message"
+            }
+
+            **Example 2: Analyze Service Error Rate**
+
+            Step 1 - Get error count by service:
+            {
+              "query": "status:error",
+              "time": "1h",
+              "limit": 100,
+              "jq_filter": ".data | group_by(.attributes.service) | map({service: .[0].attributes.service, errors: length}) | sort_by(.errors) | reverse"
+            }
+
+            Step 2 - Drill into top service:
+            {
+              "query": "service:api-gateway status:error",
+              "time": "1h",
+              "limit": 5,
+              "jq_filter": ".data[] | {time: .attributes.timestamp, message: .attributes.message[0:150]}",
+              "jq_streaming": true
+            }
+
+            **Example 3: Build Timeline of Events**
+            {
+              "query": "transaction_id:ABC123",
+              "time": "24h",
+              "limit": 20,
+              "jq_filter": ".data | map({time: .attributes.timestamp, service: .attributes.service, event: (if .attributes.message | contains(\"started\") then \"start\" elif .attributes.message | contains(\"completed\") then \"complete\" elif .attributes.status == \"error\" then \"error\" else \"processing\" end)}) | sort_by(.time)"
+            }
+
             ## Response Structure
             {
               "data": [{"id": "...", "attributes": {"timestamp": "...", "message": "...", "service": "..."}}],
               "meta": {"page": {"after": "cursor_or_null"}}
             }
+
+            ## PERFORMANCE & TOKEN OPTIMIZATION
+
+            ### Token Usage by Strategy:
+
+            | Approach | Token Cost | Use Case |
+            |----------|-----------|----------|
+            | format: "count" | ~100 | Validate query scope |
+            | limit: 5 + simple jq | ~1,000 | Preview structure |
+            | limit: 20 + group_by | ~3,000 | Aggregate patterns |
+            | limit: 50 + full data | ~10,000 | Get comprehensive view |
+            | limit: 100 + no filter | ~40,000+ | ⚠️ Truncation risk |
+
+            ### Best Practices:
+            1. **Always start with format: "count"** to validate query scope
+            2. **Use includeTags: false** (default) - tags are huge and rarely needed
+            3. **Extract only needed fields** with jq map to reduce payload size
+            4. **Slice long messages**: `.attributes.message[0:200]` to preview without bloat
+            5. **Use pagination** for >50 results via cursor parameter
+
+            ### Anti-Patterns:
+            - ❌ Starting with limit: 100 and no jq filter
+            - ❌ Including full message bodies when you only need counts
+            - ❌ Not using format: "count" to validate scope first
+            - ❌ Requesting tags when not analyzing tag-based issues
 
             ## MCP Usage Notes
             YOU (the LLM) should:
@@ -256,10 +406,20 @@ class LogsController
             type: 'boolean',
             description: <<<TEXT
                 Whether to include the tags array in log entries. Optional, defaults to false.
-                Tags can be very large (100+ items per log) and increase response size significantly.
-                Set to false (default): Strips tags array from each log entry for faster responses
-                Set to true: Includes full tags array with all log metadata
-                Recommendation: Use false unless you specifically need tag analysis
+
+                ⚠️ RECOMMENDATION: Keep this false (default) unless you specifically need tag analysis.
+
+                ## TOKEN IMPACT:
+                - false (default): ~1,000-5,000 tokens per query ✅
+                - true: Adds 5,000-20,000+ tokens (100+ tags per log) ❌
+
+                Tags are huge arrays of metadata that dramatically increase token usage:
+                - Each log entry has 100+ tag items
+                - Most investigations don't need tags
+                - Use only for tag-based debugging or analysis
+
+                Set to false (default): Strips tags array from each log entry
+                Set to true: Includes full tags array (rarely needed)
                 TEXT
         )]
         ?bool $includeTags = false,
@@ -268,19 +428,28 @@ class LogsController
             description: <<<TEXT
                 Maximum number of logs to return per request. Optional.
 
+                ## RECOMMENDED VALUES:
+                - **5-20** with jq filtering (most queries) ← START HERE
+                - **50-100** ONLY when aggregating with group_by
+                - ⚠️ WARNING: Values >50 without jq filtering will likely hit token limits
+
+                ## TOKEN IMPACT:
+                - limit: 5 + jq = ~1,000 tokens ✅
+                - limit: 20 + jq = ~3,000 tokens ✅
+                - limit: 50 full data = ~10,000 tokens ⚠️
+                - limit: 100 no filter = ~40,000+ tokens ❌ (truncation risk!)
+
                 ## VALIDATION RULES:
                 ✓ MUST be 1-1000
-                ✓ Start with 10 for exploratory queries
-                ✓ Use 100+ for comprehensive searches
+                ✓ Start with 5-10 to preview structure
+                ✓ Increase to 20-50 if needed with jq filtering
 
                 Default: 10 (if not specified)
                 Maximum: 1000 (API enforced limit)
 
-                Performance tips:
-                - 10-20: Faster responses, good for initial queries
-                - 100-1000: Reduces pagination requests for large datasets
+                Pro tip: Start with limit=5 to preview structure, then increase if needed
 
-                Example: 10, 50, 1000
+                Example: 5, 10, 20
                 TEXT,
             minimum: 1,
             maximum: 1000
@@ -376,6 +545,22 @@ class LogsController
             description: <<<TEXT
                 jq filter expression to transform the response data. Optional.
 
+                ## JQ FILTER GUIDELINES
+
+                ✅ SAFE patterns (recommended):
+                - Simple field extraction: `.data[0].attributes.timestamp`
+                - Mapping: `.data | map({field1, field2})`
+                - Grouping: `.data | group_by(.attributes.service)`
+                - Filtering: `.data[] | select(.attributes.status == "error")`
+                - String slicing: `.attributes.message[0:200]`
+
+                ⚠️ RISKY patterns (may fail):
+                - `fromjson` on nested JSON strings (use smaller queries instead)
+                - Deep nested paths with multiple conditionals
+                - Complex string parsing with regex
+
+                💡 Alternative: Use `json_path` for simple nested field extraction instead of complex jq.
+
                 ## JQ FILTER TEMPLATES:
 
                 Extract first N logs:
@@ -418,6 +603,21 @@ class LogsController
                 - "[.data[]]" - Get all logs as array (returns: array)
                 - ".data | length" - Count logs (returns: number)
                 - "[.data[].attributes.service] | unique" - Unique services (returns: array)
+
+                ## TROUBLESHOOTING JQ ERRORS
+
+                If you get `MCP error -32603: Error while executing tool`:
+
+                1. **Simplify your jq filter** - try without `fromjson`, complex conditionals
+                2. **Use json_path instead** - for simple field extraction like `data.0.attributes.field`
+                3. **Check for null values** - add `select(. != null)` guards
+                4. **Test incrementally** - start with `.data[0]`, then add transformations
+                5. **Verify field names** - use a simple query first to see available fields
+
+                Common failures:
+                - ❌ `.attributes.context.exception.file | split(":")` → Use json_path or simpler query
+                - ❌ `.attributes.message | fromjson` → Parse in multiple queries instead
+                - ✅ `.attributes.timestamp` → Simple paths work great
 
                 Security: jq expressions are sandboxed (no file system access)
 
