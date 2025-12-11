@@ -562,7 +562,7 @@ class LogsController
 
                 DEFAULT: Use format="full" unless user explicitly needs aggregation
                 TEXT,
-            enum: ['full', 'count', 'summary', 'scope_analysis', 'event_timeline', 'error_signatures', 'field_stats']
+            enum: ['full', 'count', 'summary', 'scope_analysis', 'event_timeline', 'error_signatures', 'field_stats', 'compare_batch_outcomes', 'causal_chain', 'auto']
         )]
         ?string $format = 'full',
         #[Schema(
@@ -770,7 +770,38 @@ class LogsController
                 TEXT,
             minLength: 1
         )]
-        ?string $field = null
+        ?string $field = null,
+        #[Schema(
+            type: 'string',
+            description: <<<TEXT
+                Field to identify batches for compare_batch_outcomes format.
+
+                Examples: "batch_id", "transaction_id", "feed_id", "correlation_id"
+
+                If not specified, will auto-detect common batch identifiers.
+                Only used when format="compare_batch_outcomes".
+                TEXT
+        )]
+        ?string $batch_field = null,
+        #[Schema(
+            type: 'string',
+            description: <<<TEXT
+                Field to correlate events for causal_chain format.
+
+                Examples: "order_id", "trace_id", "transaction_id", "request_id"
+
+                If not specified, will auto-detect common correlation fields.
+                Only used when format="causal_chain".
+                TEXT
+        )]
+        ?string $correlation_field = null,
+        #[Schema(
+            type: 'integer',
+            description: 'Minutes to look back before error for causal_chain format (default: 60). Only used when format="causal_chain".',
+            minimum: 1,
+            maximum: 1440
+        )]
+        int $lookback_minutes = 60
     ): mixed {
         // Ensure time has a default value (handle null from MCP)
         $time = $time ?? '1h';
@@ -828,6 +859,9 @@ class LogsController
 
         $response = $this->response($url, $body);
 
+        // Always enrich with parsed messages (JSON/XML extraction)
+        $response = $this->enrichWithParsedMessages($response);
+
         // Handle different output formats
         if ($format === 'count') {
             $response = $this->formatCount($response, $query, $time_display, $from, $to);
@@ -846,6 +880,12 @@ class LogsController
                 $normalized_field = '@' . $field;
             }
             $response = $this->formatFieldStats($response, $query, $time_display, $from, $to, $normalized_field);
+        } elseif ($format === 'compare_batch_outcomes') {
+            $response = $this->formatCompareBatchOutcomes($response, $query, $time_display, $from, $to, $batch_field);
+        } elseif ($format === 'causal_chain') {
+            $response = $this->formatCausalChain($response, $query, $time_display, $from, $to, $correlation_field, $lookback_minutes);
+        } elseif ($format === 'auto') {
+            $response = $this->formatAuto($response, $query, $time_display, $from, $to, $batch_field, $correlation_field, $lookback_minutes);
         } else {
             // Default: full format
             $response = $this->filterTags($response, $includeTags ?? false);
@@ -2532,5 +2572,968 @@ class LogsController
         usort($outliers, fn ($a, $b) => $b['value'] <=> $a['value']);
 
         return array_slice($outliers, 0, 10);
+    }
+
+    /**
+     * Enriches response with parsed message fields (JSON/XML extraction).
+     *
+     * Automatically detects and parses structured data in message fields,
+     * making previously opaque JSON/XML queryable via dot notation.
+     *
+     * @param  array  $response  The Datadog API response
+     *
+     * @return array  Enriched response with message_parsed.* fields
+     */
+    protected function enrichWithParsedMessages(array $response): array
+    {
+        if (!isset($response['data'])) {
+            return $response;
+        }
+
+        foreach ($response['data'] as &$log) {
+            $attrs = $log['attributes'] ?? [];
+            $parsed = $this->parseMessageField($attrs);
+
+            if ($parsed !== null) {
+                // Merge parsed fields into attributes
+                $log['attributes'] = array_merge($attrs, $parsed);
+            }
+        }
+        unset($log); // Break reference
+
+        return $response;
+    }
+
+    /**
+     * Parses structured data (JSON/XML) from message field.
+     *
+     * Detects and extracts JSON or XML embedded in log messages,
+     * enabling rich querying of previously unstructured data.
+     *
+     * @param  array  $log_attributes  Log attributes array
+     *
+     * @return array|null  Flattened parsed data or null if no structure found
+     */
+    protected function parseMessageField(array $log_attributes): ?array
+    {
+        $message = $log_attributes['message'] ?? '';
+
+        // Try JSON parsing (most common case)
+        if (str_contains($message, '{') || str_contains($message, '[')) {
+            // Extract JSON substring (handles text before/after JSON)
+            if (preg_match('/\{.*\}|\[.*\]/s', $message, $matches)) {
+                $json_str = $matches[0];
+                $parsed = json_decode($json_str, true);
+
+                if (json_last_error() === JSON_ERROR_NONE) {
+                    return $this->flattenParsedData($parsed, 'message_parsed');
+                }
+            }
+        }
+
+        // Try XML parsing
+        if (str_contains($message, '<') && str_contains($message, '>')) {
+            libxml_use_internal_errors(true);
+            $xml = simplexml_load_string($message);
+
+            if ($xml !== false) {
+                $parsed = json_decode(json_encode($xml), true);
+                return $this->flattenParsedData($parsed, 'message_parsed');
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Flattens nested array into dot-notation keys.
+     *
+     * Converts nested structures like ['error' => ['code' => 18028]]
+     * into flat keys like 'message_parsed.error.code' => 18028
+     *
+     * @param  array  $data  Nested array to flatten
+     * @param  string  $prefix  Key prefix (e.g., 'message_parsed')
+     *
+     * @return array  Flattened array with dot-notation keys
+     */
+    protected function flattenParsedData(array $data, string $prefix = ''): array
+    {
+        $result = [];
+
+        foreach ($data as $key => $value) {
+            $full_key = $prefix ? $prefix . '.' . $key : $key;
+
+            if (is_array($value) && !empty($value) && array_values($value) === $value) {
+                // Indexed array - serialize as JSON
+                $result[$full_key] = json_encode($value);
+            } elseif (is_array($value) && !empty($value)) {
+                // Associative array - recursive flatten
+                $result = array_merge($result, $this->flattenParsedData($value, $full_key));
+            } else {
+                // Scalar value
+                $result[$full_key] = $value;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Formats response as batch comparison showing differences between successes and failures.
+     *
+     * @param  array  $response
+     * @param  string  $query
+     * @param  string  $time_range
+     * @param  int  $from
+     * @param  int  $to
+     * @param  string|null  $batch_field
+     *
+     * @return array
+     */
+    protected function formatCompareBatchOutcomes(
+        array $response,
+        string $query,
+        string $time_range,
+        int $from,
+        int $to,
+        ?string $batch_field = null
+    ): array {
+        $data = $response['data'] ?? [];
+
+        // Auto-detect batch field if not specified
+        if ($batch_field === null) {
+            $batch_field = $this->detectBatchField($data);
+        }
+
+        if ($batch_field === null) {
+            return [
+                'format' => 'compare_batch_outcomes',
+                'error' => 'No batch field detected in logs',
+                'suggestion' => 'Specify batch_field parameter or ensure logs contain batch_id/transaction_id/feed_id'
+            ];
+        }
+
+        // Group logs by batch
+        $batches = $this->groupByField($data, $batch_field);
+
+        // Find batches with mixed outcomes (successes + failures)
+        $mixed_batches = array_filter($batches, fn($logs) => $this->hasMixedOutcomes($logs));
+
+        if (empty($mixed_batches)) {
+            return [
+                'format' => 'compare_batch_outcomes',
+                'error' => 'No batches with mixed outcomes found',
+                'suggestion' => 'Try expanding time range or adjusting query'
+            ];
+        }
+
+        // Analyze largest mixed batch
+        $largest_batch = array_reduce($mixed_batches, fn($a, $b) => count($a) > count($b) ? $a : $b, []);
+        $batch_id = $this->extractFieldValueFromLog($largest_batch[0], $batch_field) ?? 'unknown';
+
+        // Partition into success/failure
+        [$successes, $failures] = $this->partitionByOutcome($largest_batch);
+
+        // Aggregate metrics
+        $success_metrics = $this->aggregateBatchMetrics($successes);
+        $failure_metrics = $this->aggregateBatchMetrics($failures);
+
+        // Identify differences
+        $differences = $this->identifyKeyDifferences($success_metrics, $failure_metrics);
+
+        // Generate hypothesis
+        $hypothesis = $this->generateBatchHypothesis($differences);
+
+        // Calculate confidence
+        $confidence = $this->calculateBatchConfidence(count($successes), count($failures), $differences);
+
+        return [
+            'format' => 'compare_batch_outcomes',
+            'batch_id' => $batch_id,
+            'successful_orders' => count($successes),
+            'failed_orders' => count($failures),
+            'comparison' => [
+                'successful_orders_attributes' => $success_metrics,
+                'failed_orders_attributes' => $failure_metrics,
+                'key_differences' => $differences,
+            ],
+            'hypothesis' => $hypothesis,
+            'confidence' => round($confidence, 2),
+            'recommendation' => $this->generateBatchRecommendation($hypothesis, $differences),
+            'query' => $query,
+            'time_range' => $time_range,
+        ];
+    }
+
+    /**
+     * Auto-detects batch field from logs.
+     *
+     * @param  array  $data
+     *
+     * @return string|null
+     */
+    protected function detectBatchField(array $data): ?string
+    {
+        $candidates = ['batch_id', 'transaction_id', 'feed_id', 'correlation_id'];
+
+        foreach ($candidates as $field) {
+            if ($this->fieldExistsInLogs($data, $field)) {
+                return $field;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Checks if field exists in any log entry.
+     *
+     * @param  array  $data
+     * @param  string  $field
+     *
+     * @return bool
+     */
+    protected function fieldExistsInLogs(array $data, string $field): bool
+    {
+        foreach ($data as $log) {
+            if ($this->extractFieldValueFromLog($log, $field) !== null) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Extracts field value from log entry.
+     *
+     * @param  array  $log
+     * @param  string  $field
+     *
+     * @return mixed
+     */
+    protected function extractFieldValueFromLog(array $log, string $field): mixed
+    {
+        $attrs = $log['attributes'] ?? [];
+
+        // Try direct access
+        if (isset($attrs[$field])) {
+            return $attrs[$field];
+        }
+
+        // Try nested access (dot notation)
+        if (str_contains($field, '.')) {
+            $parts = explode('.', $field);
+            $value = $attrs;
+            foreach ($parts as $part) {
+                if (is_array($value) && isset($value[$part])) {
+                    $value = $value[$part];
+                } else {
+                    return null;
+                }
+            }
+            return $value;
+        }
+
+        return null;
+    }
+
+    /**
+     * Groups logs by field value.
+     *
+     * @param  array  $data
+     * @param  string  $field
+     *
+     * @return array
+     */
+    protected function groupByField(array $data, string $field): array
+    {
+        $groups = [];
+
+        foreach ($data as $log) {
+            $value = $this->extractFieldValueFromLog($log, $field);
+            if ($value !== null) {
+                $key = is_scalar($value) ? (string) $value : json_encode($value);
+                $groups[$key][] = $log;
+            }
+        }
+
+        return $groups;
+    }
+
+    /**
+     * Checks if logs contain both successes and failures.
+     *
+     * @param  array  $logs
+     *
+     * @return bool
+     */
+    protected function hasMixedOutcomes(array $logs): bool
+    {
+        $has_success = false;
+        $has_failure = false;
+
+        foreach ($logs as $log) {
+            $status = $log['attributes']['status'] ?? '';
+            if ($status === 'error') {
+                $has_failure = true;
+            } else {
+                $has_success = true;
+            }
+
+            if ($has_success && $has_failure) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Partitions logs into successes and failures.
+     *
+     * @param  array  $logs
+     *
+     * @return array
+     */
+    protected function partitionByOutcome(array $logs): array
+    {
+        $successes = [];
+        $failures = [];
+
+        foreach ($logs as $log) {
+            $status = $log['attributes']['status'] ?? '';
+            if ($status === 'error') {
+                $failures[] = $log;
+            } else {
+                $successes[] = $log;
+            }
+        }
+
+        return [$successes, $failures];
+    }
+
+    /**
+     * Aggregates metrics from batch logs.
+     *
+     * @param  array  $logs
+     *
+     * @return array
+     */
+    protected function aggregateBatchMetrics(array $logs): array
+    {
+        $metrics = [
+            'count' => count($logs),
+            'services' => [],
+            'avg_timing' => null,
+            'common_attributes' => [],
+        ];
+
+        // Count services
+        foreach ($logs as $log) {
+            $service = $log['attributes']['service'] ?? 'unknown';
+            $metrics['services'][$service] = ($metrics['services'][$service] ?? 0) + 1;
+        }
+
+        // Calculate timing if timestamps present
+        $timestamps = array_map(fn($log) => strtotime($log['attributes']['timestamp'] ?? ''), $logs);
+        $timestamps = array_filter($timestamps, fn($ts) => $ts !== false);
+
+        if (!empty($timestamps)) {
+            $metrics['avg_timing'] = (max($timestamps) - min($timestamps)) / 60; // minutes
+        }
+
+        return $metrics;
+    }
+
+    /**
+     * Identifies key differences between success and failure metrics.
+     *
+     * @param  array  $success_metrics
+     * @param  array  $failure_metrics
+     *
+     * @return array
+     */
+    protected function identifyKeyDifferences(array $success_metrics, array $failure_metrics): array
+    {
+        $differences = [];
+
+        // Compare timing
+        if (isset($success_metrics['avg_timing']) && isset($failure_metrics['avg_timing'])) {
+            $timing_diff = abs($success_metrics['avg_timing'] - $failure_metrics['avg_timing']);
+
+            if ($timing_diff > 5) { // More than 5 minutes difference
+                $differences[] = [
+                    'attribute' => 'timing',
+                    'success_value' => sprintf('%.0f minutes average', $success_metrics['avg_timing']),
+                    'failure_value' => sprintf('%.0f minutes', $failure_metrics['avg_timing']),
+                    'interpretation' => sprintf(
+                        'Failed orders processed %.0f minutes %s than successful',
+                        $timing_diff,
+                        $failure_metrics['avg_timing'] < $success_metrics['avg_timing'] ? 'earlier' : 'later'
+                    ),
+                    'significance' => 'high'
+                ];
+            }
+        }
+
+        // Compare services
+        $success_services = array_keys($success_metrics['services'] ?? []);
+        $failure_services = array_keys($failure_metrics['services'] ?? []);
+
+        $service_diff = array_diff($failure_services, $success_services);
+        if (!empty($service_diff)) {
+            $differences[] = [
+                'attribute' => 'services',
+                'success_value' => implode(', ', $success_services),
+                'failure_value' => implode(', ', $failure_services),
+                'interpretation' => 'Failed orders involved different services: ' . implode(', ', $service_diff),
+                'significance' => 'medium'
+            ];
+        }
+
+        return $differences;
+    }
+
+    /**
+     * Generates hypothesis from differences.
+     *
+     * @param  array  $differences
+     *
+     * @return string
+     */
+    protected function generateBatchHypothesis(array $differences): string
+    {
+        if (empty($differences)) {
+            return 'No significant differences detected';
+        }
+
+        // Generate hypothesis based on most significant difference
+        $primary = $differences[0];
+
+        if ($primary['attribute'] === 'timing') {
+            return 'Timing race condition may be causing failures';
+        }
+
+        if ($primary['attribute'] === 'services') {
+            return 'Service involvement differs between success and failure cases';
+        }
+
+        return 'Detected pattern differences between success and failure cases';
+    }
+
+    /**
+     * Calculates confidence for batch comparison.
+     *
+     * @param  int  $success_count
+     * @param  int  $failure_count
+     * @param  array  $differences
+     *
+     * @return float
+     */
+    protected function calculateBatchConfidence(int $success_count, int $failure_count, array $differences): float
+    {
+        // Base confidence on sample size and clarity of differences
+        $min_count = min($success_count, $failure_count);
+        $sample_confidence = $min_count > 20 ? 0.9 : ($min_count > 5 ? 0.7 : 0.5);
+
+        $diff_confidence = count($differences) > 2 ? 0.9 : (count($differences) > 0 ? 0.7 : 0.3);
+
+        return ($sample_confidence + $diff_confidence) / 2;
+    }
+
+    /**
+     * Generates recommendation based on hypothesis.
+     *
+     * @param  string  $hypothesis
+     * @param  array  $differences
+     *
+     * @return string
+     */
+    protected function generateBatchRecommendation(string $hypothesis, array $differences): string
+    {
+        if (str_contains($hypothesis, 'timing')) {
+            return 'Add validation delays or pre-checks before processing';
+        }
+
+        if (str_contains($hypothesis, 'service')) {
+            return 'Investigate service dependency differences';
+        }
+
+        return 'Investigate differences in attributes between success and failure cases';
+    }
+
+    /**
+     * Formats response as causal chain showing event timeline leading to errors.
+     *
+     * @param  array  $response
+     * @param  string  $query
+     * @param  string  $time_range
+     * @param  int  $from
+     * @param  int  $to
+     * @param  string|null  $correlation_field
+     * @param  int  $lookback_minutes
+     *
+     * @return array
+     */
+    protected function formatCausalChain(
+        array $response,
+        string $query,
+        string $time_range,
+        int $from,
+        int $to,
+        ?string $correlation_field = null,
+        int $lookback_minutes = 60
+    ): array {
+        $data = $response['data'] ?? [];
+
+        // Find error events
+        $errors = array_filter($data, fn($log) =>
+            ($log['attributes']['status'] ?? '') === 'error'
+        );
+
+        if (empty($errors)) {
+            return [
+                'format' => 'causal_chain',
+                'error' => 'No error events found in query results',
+                'suggestion' => 'Try adding status:error to query'
+            ];
+        }
+
+        // Take first error as target
+        $target_error = reset($errors);
+
+        // Auto-detect correlation field if not specified
+        if ($correlation_field === null) {
+            $correlation_field = $this->detectCorrelationField($target_error);
+        }
+
+        if ($correlation_field === null) {
+            return [
+                'format' => 'causal_chain',
+                'error' => 'No correlation field detected in error log',
+                'suggestion' => 'Specify correlation_field parameter or ensure logs contain order_id/trace_id/transaction_id'
+            ];
+        }
+
+        // Extract correlation ID
+        $correlation_id = $this->extractFieldValueFromLog($target_error, $correlation_field);
+
+        if ($correlation_id === null) {
+            return [
+                'format' => 'causal_chain',
+                'error' => "No correlation field '{$correlation_field}' found in error log"
+            ];
+        }
+
+        // Build causal chain
+        $chain = $this->buildCausalChain(
+            $data,
+            $target_error,
+            $correlation_field,
+            $correlation_id,
+            $lookback_minutes
+        );
+
+        // Detect anomalies
+        $anomalies = $this->detectAnomalies($chain);
+
+        // Generate recommendations
+        $recommendations = $this->generateCausalRecommendations($chain, $anomalies);
+
+        return [
+            'format' => 'causal_chain',
+            'entity_id' => $correlation_id,
+            'correlation_field' => $correlation_field,
+            'causal_chain' => $chain,
+            'anomalies_detected' => count($anomalies),
+            'conclusion' => $this->generateConclusion($chain, $anomalies),
+            'recommendations' => $recommendations,
+            'query' => $query,
+            'time_range' => $time_range,
+        ];
+    }
+
+    /**
+     * Auto-detects correlation field from log.
+     *
+     * @param  array  $log
+     *
+     * @return string|null
+     */
+    protected function detectCorrelationField(array $log): ?string
+    {
+        $candidates = ['order_id', 'trace_id', 'transaction_id', 'request_id', 'correlation_id'];
+
+        foreach ($candidates as $field) {
+            if ($this->extractFieldValueFromLog($log, $field) !== null) {
+                return $field;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Builds causal chain of events leading to error.
+     *
+     * @param  array  $all_logs
+     * @param  array  $target_error
+     * @param  string  $correlation_field
+     * @param  string  $correlation_id
+     * @param  int  $lookback_minutes
+     *
+     * @return array
+     */
+    protected function buildCausalChain(
+        array $all_logs,
+        array $target_error,
+        string $correlation_field,
+        string $correlation_id,
+        int $lookback_minutes
+    ): array {
+        $error_timestamp = strtotime($target_error['attributes']['timestamp'] ?? '');
+        $lookback_seconds = $lookback_minutes * 60;
+        $cutoff_timestamp = $error_timestamp - $lookback_seconds;
+
+        // Filter to relevant logs
+        $relevant_logs = array_filter($all_logs, function($log) use ($correlation_field, $correlation_id, $cutoff_timestamp, $error_timestamp) {
+            $log_correlation_id = $this->extractFieldValueFromLog($log, $correlation_field);
+            $log_timestamp = strtotime($log['attributes']['timestamp'] ?? '');
+
+            return $log_correlation_id === $correlation_id
+                && $log_timestamp !== false
+                && $log_timestamp >= $cutoff_timestamp
+                && $log_timestamp <= $error_timestamp;
+        });
+
+        // Sort chronologically
+        usort($relevant_logs, fn($a, $b) =>
+            strcmp($a['attributes']['timestamp'] ?? '', $b['attributes']['timestamp'] ?? '')
+        );
+
+        // Build chain entries
+        $chain = [];
+        $step = 1;
+
+        foreach ($relevant_logs as $log) {
+            $log_timestamp = strtotime($log['attributes']['timestamp'] ?? '');
+            $delta_seconds = $error_timestamp - $log_timestamp;
+            $delta_minutes = round($delta_seconds / 60);
+
+            $categorization = $this->categorizeEvent($log['attributes'] ?? []);
+
+            $chain[] = [
+                'step' => $step++,
+                'event' => $categorization['event_type'],
+                'timestamp' => $log['attributes']['timestamp'] ?? '',
+                'delta_to_error' => sprintf('-%d minutes', $delta_minutes),
+                'category' => $categorization['category'],
+                'service' => $log['attributes']['service'] ?? 'unknown',
+            ];
+        }
+
+        return $chain;
+    }
+
+    /**
+     * Detects anomalies in causal chain.
+     *
+     * @param  array  $chain
+     *
+     * @return array
+     */
+    protected function detectAnomalies(array $chain): array
+    {
+        $anomalies = [];
+
+        // Check for expected event patterns
+        $event_types = array_column($chain, 'event');
+
+        // Example: Check for missing order details fetch
+        // This is a simplified check - in production you'd have more sophisticated pattern matching
+        $has_acknowledgment = false;
+        $has_details_fetch = false;
+
+        foreach ($event_types as $event) {
+            if (str_contains(strtolower($event), 'acknow')) {
+                $has_acknowledgment = true;
+            }
+            if (str_contains(strtolower($event), 'fetch') || str_contains(strtolower($event), 'details')) {
+                $has_details_fetch = true;
+            }
+        }
+
+        if ($has_acknowledgment && !$has_details_fetch) {
+            $anomalies[] = [
+                'type' => 'MISSING_EVENT',
+                'expected' => 'Order details fetch',
+                'impact' => 'Cannot verify order items before acknowledgment',
+                'significance' => 'high'
+            ];
+        }
+
+        // Check for timing anomalies (events too close together)
+        if (count($chain) >= 2) {
+            for ($i = 0; $i < count($chain) - 1; $i++) {
+                $current_time = strtotime($chain[$i]['timestamp']);
+                $next_time = strtotime($chain[$i + 1]['timestamp']);
+
+                if ($next_time - $current_time < 1) { // Less than 1 second apart
+                    $anomalies[] = [
+                        'type' => 'TIMING_ANOMALY',
+                        'expected' => 'Events should be spaced reasonably',
+                        'impact' => 'Events occurred too quickly, may indicate race condition',
+                        'significance' => 'medium'
+                    ];
+                    break; // Only report once
+                }
+            }
+        }
+
+        return $anomalies;
+    }
+
+    /**
+     * Generates conclusion from chain and anomalies.
+     *
+     * @param  array  $chain
+     * @param  array  $anomalies
+     *
+     * @return string
+     */
+    protected function generateConclusion(array $chain, array $anomalies): string
+    {
+        if (!empty($anomalies)) {
+            $first = $anomalies[0];
+            return $first['expected'] . ' - ' . $first['impact'];
+        }
+
+        if (count($chain) === 1) {
+            return 'Single event in chain - no context available';
+        }
+
+        return 'Event sequence analyzed - no anomalies detected';
+    }
+
+    /**
+     * Generates recommendations from causal analysis.
+     *
+     * @param  array  $chain
+     * @param  array  $anomalies
+     *
+     * @return array
+     */
+    protected function generateCausalRecommendations(array $chain, array $anomalies): array
+    {
+        $recommendations = [];
+
+        foreach ($anomalies as $anomaly) {
+            if ($anomaly['type'] === 'MISSING_EVENT') {
+                $recommendations[] = 'Add ' . $anomaly['expected'] . ' step to workflow';
+            } elseif ($anomaly['type'] === 'TIMING_ANOMALY') {
+                $recommendations[] = 'Add timing validation or delays between critical operations';
+            }
+        }
+
+        if (empty($recommendations)) {
+            $recommendations[] = 'Review event sequence for optimization opportunities';
+        }
+
+        return $recommendations;
+    }
+
+    /**
+     * Formats response with automatic format selection and combined insights.
+     *
+     * @param  array  $response
+     * @param  string  $query
+     * @param  string  $time_range
+     * @param  int  $from
+     * @param  int  $to
+     * @param  string|null  $batch_field
+     * @param  string|null  $correlation_field
+     * @param  int  $lookback_minutes
+     *
+     * @return array
+     */
+    protected function formatAuto(
+        array $response,
+        string $query,
+        string $time_range,
+        int $from,
+        int $to,
+        ?string $batch_field = null,
+        ?string $correlation_field = null,
+        int $lookback_minutes = 60
+    ): array {
+        $data = $response['data'] ?? [];
+
+        // Analyze query results
+        $has_errors = $this->containsErrors($data);
+        $has_batches = $this->hasBatchIdentifiers($data);
+        $has_correlation_ids = $this->hasCorrelationIds($data);
+
+        $combined_analysis = [
+            'format' => 'auto',
+            'analyses' => [],
+            'data_characteristics' => [
+                'has_errors' => $has_errors,
+                'has_batches' => $has_batches,
+                'has_correlation_ids' => $has_correlation_ids,
+                'log_count' => count($data),
+            ],
+        ];
+
+        // Run error signatures if errors present
+        if ($has_errors) {
+            $combined_analysis['analyses']['error_signatures'] =
+                $this->formatErrorSignatures($response, $query, $time_range, $from, $to);
+        }
+
+        // Run batch comparison if mixed outcomes in batches
+        if ($has_batches && $has_errors) {
+            $batch_analysis = $this->formatCompareBatchOutcomes($response, $query, $time_range, $from, $to, $batch_field);
+            // Only include if successful (no error key)
+            if (!isset($batch_analysis['error'])) {
+                $combined_analysis['analyses']['batch_comparison'] = $batch_analysis;
+            }
+        }
+
+        // Run causal chain if correlation IDs present
+        if ($has_correlation_ids && $has_errors) {
+            $causal_analysis = $this->formatCausalChain($response, $query, $time_range, $from, $to, $correlation_field, $lookback_minutes);
+            // Only include if successful (no error key)
+            if (!isset($causal_analysis['error'])) {
+                $combined_analysis['analyses']['causal_chain'] = $causal_analysis;
+            }
+        }
+
+        // Generate combined insights
+        $combined_analysis['insights'] = $this->synthesizeInsights($combined_analysis['analyses']);
+
+        // Add usage hint
+        $combined_analysis['usage_hint'] = $this->generateUsageHint($combined_analysis['analyses']);
+
+        return $combined_analysis;
+    }
+
+    /**
+     * Checks if logs contain error events.
+     *
+     * @param  array  $data
+     *
+     * @return bool
+     */
+    protected function containsErrors(array $data): bool
+    {
+        foreach ($data as $log) {
+            if (($log['attributes']['status'] ?? '') === 'error') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Checks if logs contain batch identifiers.
+     *
+     * @param  array  $data
+     *
+     * @return bool
+     */
+    protected function hasBatchIdentifiers(array $data): bool
+    {
+        return $this->detectBatchField($data) !== null;
+    }
+
+    /**
+     * Checks if logs contain correlation IDs.
+     *
+     * @param  array  $data
+     *
+     * @return bool
+     */
+    protected function hasCorrelationIds(array $data): bool
+    {
+        if (empty($data)) {
+            return false;
+        }
+
+        // Check first log for correlation fields
+        return $this->detectCorrelationField($data[0]) !== null;
+    }
+
+    /**
+     * Synthesizes insights from multiple analyses.
+     *
+     * @param  array  $analyses
+     *
+     * @return array
+     */
+    protected function synthesizeInsights(array $analyses): array
+    {
+        $insights = [];
+
+        // Extract key findings from batch comparison
+        if (isset($analyses['batch_comparison']['hypothesis'])) {
+            $insights[] = [
+                'source' => 'batch_comparison',
+                'insight' => $analyses['batch_comparison']['hypothesis'],
+                'confidence' => $analyses['batch_comparison']['confidence'] ?? 0,
+                'recommendation' => $analyses['batch_comparison']['recommendation'] ?? null,
+            ];
+        }
+
+        // Extract key findings from causal chain
+        if (isset($analyses['causal_chain']['conclusion'])) {
+            $insights[] = [
+                'source' => 'causal_chain',
+                'insight' => $analyses['causal_chain']['conclusion'],
+                'anomalies' => $analyses['causal_chain']['anomalies_detected'] ?? 0,
+                'recommendations' => $analyses['causal_chain']['recommendations'] ?? [],
+            ];
+        }
+
+        // Extract key findings from error signatures
+        if (isset($analyses['error_signatures']['signatures'])) {
+            $signature_count = count($analyses['error_signatures']['signatures']);
+            if ($signature_count > 0) {
+                $top_signature = $analyses['error_signatures']['signatures'][0] ?? null;
+                if ($top_signature) {
+                    $insights[] = [
+                        'source' => 'error_signatures',
+                        'insight' => sprintf('Most common error: %s (%d occurrences)', $top_signature['pattern_name'], $top_signature['count']),
+                        'severity' => $top_signature['severity'] ?? 'unknown',
+                        'trend' => $top_signature['trend'] ?? 'unknown',
+                    ];
+                }
+            }
+        }
+
+        return $insights;
+    }
+
+    /**
+     * Generates usage hint based on available analyses.
+     *
+     * @param  array  $analyses
+     *
+     * @return string
+     */
+    protected function generateUsageHint(array $analyses): string
+    {
+        $available = array_keys($analyses);
+
+        if (count($available) === 0) {
+            return 'No analysis performed - query returned data without errors';
+        }
+
+        if (count($available) === 1) {
+            return 'Single analysis performed: ' . $available[0] . '. For more insights, ensure logs contain batch_id and correlation_id fields.';
+        }
+
+        return sprintf('Multiple analyses performed: %s. Check each section for detailed insights.', implode(', ', $available));
     }
 }
