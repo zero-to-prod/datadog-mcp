@@ -469,7 +469,49 @@ class LogsController
                 Note: If the filter produces a single value, streaming mode has no effect.
                 TEXT
         )]
-        ?bool $jq_streaming = false
+        ?bool $jq_streaming = false,
+        #[Schema(
+            type: 'string',
+            description: <<<TEXT
+                Simplified JSON path for extracting fields without jq syntax. Optional.
+
+                Provides a simpler alternative to jq_filter for common field extractions.
+                Uses dot notation for nested fields and numbers for array indices.
+
+                Path format:
+                - Use dots (.) to separate nested fields: "data.attributes.service"
+                - Use numbers for array indices: "data.0.attributes.message"
+                - Supports any depth of nesting: "data.0.attributes.custom.nested.field"
+
+                Examples:
+                - "data.0" - Get first log entry
+                - "data.0.attributes.service" - Get service name from first log
+                - "data.0.attributes.message" - Get message from first log
+                - "meta.page.after" - Get pagination cursor
+
+                Common patterns:
+                - First log: json_path="data.0"
+                - First message: json_path="data.0.attributes.message"
+                - Service from first log: json_path="data.0.attributes.service"
+                - Pagination cursor: json_path="meta.page.after"
+
+                This is internally converted to jq syntax:
+                - "data.0.attributes.service" becomes ".data[0].attributes.service"
+                - "meta.page.after" becomes ".meta.page.after"
+
+                Works with jq_raw_output and jq_streaming parameters.
+
+                Note: Cannot be used together with jq_filter. Use json_path for simple extractions,
+                or jq_filter for complex transformations (filtering, mapping, aggregation).
+
+                For complex queries, use jq_filter instead:
+                - Filtering: jq_filter=".data[] | select(.attributes.status == \"error\")"
+                - Mapping: jq_filter="[.data[].attributes.service] | unique"
+                - Aggregation: jq_filter="{count: .data | length, services: [.data[].attributes.service]}"
+                TEXT,
+            minLength: 1
+        )]
+        ?string $json_path = null
     ): mixed {
         // Ensure time_range has a default value (handle null from MCP)
         $time_range = $time_range ?? '1h';
@@ -505,6 +547,11 @@ class LogsController
             throw new RuntimeException('Parameter "sort" must be "timestamp", "-timestamp", "timestamp:asc", or "timestamp:desc"');
         }
 
+        // Validate json_path and jq_filter are mutually exclusive
+        if ($json_path !== null && trim($json_path) !== '' && $jq_filter !== null && trim($jq_filter) !== '') {
+            throw new RuntimeException('Cannot use both json_path and jq_filter parameters. Use json_path for simple field extraction, or jq_filter for complex transformations.');
+        }
+
         $body = [
             'filter' => [
                 'from' => $from,
@@ -538,6 +585,11 @@ class LogsController
         } else {
             // Default: full format
             $response = $this->filterTags($response, $includeTags ?? false);
+        }
+
+        // Convert json_path to jq_filter if provided
+        if ($json_path !== null && trim($json_path) !== '') {
+            $jq_filter = $this->convertJsonPathToJq($json_path);
         }
 
         // Apply jq filter if provided (works with any format)
@@ -956,5 +1008,49 @@ class LogsController
         }
 
         return null;
+    }
+
+    /**
+     * Converts simplified JSON path notation to jq filter syntax.
+     *
+     * Transforms dot notation paths into valid jq filter expressions:
+     * - "data.0.attributes.service" → ".data[0].attributes.service"
+     * - "meta.page.after" → ".meta.page.after"
+     *
+     * @param  string  $json_path  The simplified JSON path (e.g., "data.0.attributes.service")
+     *
+     * @return string The jq filter expression (e.g., ".data[0].attributes.service")
+     */
+    protected function convertJsonPathToJq(string $json_path): string
+    {
+        // Split path by dots
+        $segments = explode('.', $json_path);
+
+        // Convert each segment
+        $jq_parts = [];
+        foreach ($segments as $segment) {
+            if ($segment === '') {
+                continue; // Skip empty segments
+            }
+
+            // Check if segment is a number (array index)
+            if (ctype_digit($segment)) {
+                // Convert to array index syntax: [N]
+                $jq_parts[] = '['.$segment.']';
+            } else {
+                // Regular field access
+                $jq_parts[] = '.'.$segment;
+            }
+        }
+
+        // Join parts and ensure it starts with a dot (if not an array index)
+        $jq_filter = implode('', $jq_parts);
+
+        // If the filter doesn't start with . or [, prepend a dot
+        if ($jq_filter !== '' && $jq_filter[0] !== '.' && $jq_filter[0] !== '[') {
+            $jq_filter = '.'.$jq_filter;
+        }
+
+        return $jq_filter;
     }
 }

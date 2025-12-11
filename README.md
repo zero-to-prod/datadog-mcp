@@ -88,7 +88,66 @@ Search and retrieve logs from your Datadog account using the Logs API v2.
 - `limit` (int, optional) - Max logs per request, 1-1000 (default: 50)
 - `cursor` (string, optional) - Pagination cursor
 - `sort` (string, optional) - Sort order: "timestamp" or "-timestamp"
+- `json_path` (string, optional) - Simplified JSON path for field extraction
 - `jq_filter` (string, optional) - jq expression to transform response data
+
+**JSON Path Examples:**
+
+The `json_path` parameter provides a simplified way to extract fields without jq syntax. Use dot notation for nested fields and numbers for array indices.
+
+1. Get first log entry:
+```json
+{
+  "time_range": "1h",
+  "query": "status:error",
+  "json_path": "data.0"
+}
+```
+
+2. Get service name from first log:
+```json
+{
+  "time_range": "1h",
+  "query": "status:error",
+  "json_path": "data.0.attributes.service"
+}
+```
+
+3. Get message from first log:
+```json
+{
+  "time_range": "1h",
+  "query": "status:error",
+  "json_path": "data.0.attributes.message"
+}
+```
+
+4. Get pagination cursor:
+```json
+{
+  "time_range": "1h",
+  "query": "status:info",
+  "limit": 100,
+  "json_path": "meta.page.after"
+}
+```
+
+5. Extract plain text message (with raw output):
+```json
+{
+  "time_range": "1h",
+  "query": "status:error",
+  "json_path": "data.0.attributes.message",
+  "jq_raw_output": true
+}
+```
+
+**Path Conversion:**
+- `data.0` → `.data[0]`
+- `data.0.attributes.service` → `.data[0].attributes.service`
+- `meta.page.after` → `.meta.page.after`
+
+**Note:** Cannot use both `json_path` and `jq_filter` together. Use `json_path` for simple field extraction, or `jq_filter` for complex transformations.
 
 **jq Filter Examples:**
 
