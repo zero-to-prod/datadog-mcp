@@ -16,7 +16,7 @@ use RuntimeException;
  * This controller provides MCP tools for interacting with the Datadog Logs API v2.
  * See: https://docs.datadoghq.com/api/latest/logs/
  */
-class DatadogLogsController
+class LogsController
 {
     #[McpTool(
         name: 'logs',

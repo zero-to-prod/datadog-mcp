@@ -1,13 +1,60 @@
-tests/
+# Version Control
 .git/
-.github/
 .gitignore
-.env
-.env.example
-*.md
-phpunit.xml
-.idea/
-logs/
-xdebug-profiles/
+.gitattributes
+
+# CI/CD
+.github/
+
+# Docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
 .docker/
 docker/
+
+# Development tools
+.devcontainer/
+.claude/
+.idea/
+.vscode/
+.phpstorm.meta.php
+
+# Testing
+tests/
+phpunit.xml
+.phpunit.result.cache
+
+# Documentation
+*.md
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Build artifacts & dependencies (vendor copied from build stage)
+vendor/
+node_modules/
+
+# Logs and runtime data
+*.log
+xdebug-profiles/
+storage/mcp-sessions/*
+storage/cache/*
+
+# Archive and backup files
+.archive/
+*.bak
+*.backup
+*.old
+
+# IDE and OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Configuration script (if only for initial setup)
+configure.php
