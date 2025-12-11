@@ -26,33 +26,33 @@ class LogsController
 
             "Show me errors" / "Find errors":
               → query: "status:error"
-              → time_range: "1h"
+              → time: "1h"
               → limit: 10
 
             "How many errors":
               → query: "status:error"
               → format: "count"
-              → time_range: "1h"
+              → time: "1h"
 
             "Find [SERVICE] errors":
               → query: "service:SERVICE status:error"
-              → time_range: "1h"
+              → time: "1h"
 
             "Show me 500 errors":
-              → query: "@http.status_code:500"
-              → time_range: "1h"
+              → query: "http.status_code:500"  (@ added automatically)
+              → time: "1h"
 
             "Errors for user [ID]":
-              → query: "@user.id:ID status:error"
-              → time_range: "24h"
+              → query: "user.id:ID status:error"  (@ added automatically)
+              → time: "24h"
 
             "Slow requests":
-              → query: "@duration:>3000"  (>3 seconds)
-              → time_range: "1h"
+              → query: "duration:>3000"  (@ added automatically, >3 seconds)
+              → time: "1h"
 
             "Errors in production":
               → query: "env:production status:error"
-              → time_range: "1h"
+              → time: "1h"
 
             "Get latest error message":
               → query: "status:error"
@@ -69,37 +69,38 @@ class LogsController
 
             | Error Symptom | Root Cause | Solution |
             |--------------|------------|----------|
-            | data=[] | Query too restrictive | Try broader time_range: 1h→24h→7d |
-            | data=[] | Wrong @ prefix | Reserved attrs: remove @. Custom attrs: add @ |
-            | data=[] | Service name wrong | Verify with broader query: status:error |
-            | HTTP 400 | Lowercase operators | Change and→AND, or→OR, not→NOT |
-            | HTTP 400 | Malformed query | Check: quotes, @prefix, operator case |
-            | "from must be < to" | Timestamps reversed | Swap from/to values |
-            | Timestamp out of range | Used seconds not ms | Multiply by 1000 |
-            | Timestamp year wrong | Calculation error | Use: Date.now() - (hours * 3600000) |
+            | data=[] | Query too restrictive | Try broader time: "1h"→"24h"→"7d" |
+            | data=[] | Service/attribute name wrong | Verify with broader query: "status:error" |
+            | data=[] | Time range too narrow | Expand time parameter |
+            | HTTP 400 | Malformed query | Check quotes around values with spaces |
+            | HTTP 400 | Invalid attribute syntax | Use attribute:value format |
 
             RECOVERY PROTOCOL:
-            1. IF data=[] AND time_range="1h" → Retry with time_range="24h"
+            1. IF data=[] AND time="1h" → Retry with time="24h"
             2. IF still data=[] → Retry with simpler query (just "status:error")
-            3. IF HTTP 400 → Check @ prefix rules and operator case
-            4. IF timestamp error → Switch to time_range parameter
+            3. IF HTTP 400 → Check query syntax (quotes, colons, parentheses)
 
             ## Critical Rules
-            - Reserved attributes (NO @): service, env, status, host, source, version, trace_id
-            - Custom attributes (@ REQUIRED): @http.status_code, @user.id, @duration, @error.message, etc.
-            - Timestamps: MUST be milliseconds for current year (multiply Unix seconds × 1000)
-            - Boolean operators: UPPERCASE only (AND, OR, NOT)
-            - Wildcards: * (multi-char), ? (single-char)
-            - Attribute names are case-sensitive
+            ✅ AUTO-HANDLED BY BACKEND (you don't need to worry about these):
+            - @ prefixes are added automatically to custom attributes
+            - Boolean operators (and/or/not) are uppercased automatically
+            - Timestamps are accepted in multiple formats (relative, ISO, milliseconds)
 
-            ## Time Range Options
-            **EASY MODE**: Use time_range parameter with simple strings: "1h", "24h", "7d"
-            **ADVANCED**: Use from/to parameters with millisecond timestamps for precise control
+            YOU SHOULD STILL:
+            - Use quotes around values with spaces: message:"error occurred"
+            - Use wildcards for pattern matching: * (multi-char), ? (single-char)
+            - Remember attribute names are case-sensitive
 
-            Examples with time_range:
-            - time_range="1h" → Last 1 hour (recommended for most queries)
-            - time_range="24h" → Last 24 hours
-            - time_range="7d" → Last 7 days
+            ## Time Parameter (Simplified)
+            Just use the `time` parameter with any of these formats:
+            - time="1h" → Last 1 hour (recommended)
+            - time="24h" → Last 24 hours
+            - time="7d" → Last 7 days
+            - time="yesterday" → Last 24 hours
+            - time="2024-01-15T10:00:00Z" → From that time to now
+            - time="2024-01-15T10:00:00Z/2024-01-16T10:00:00Z" → Specific range
+
+            No more timestamp calculations, no more seconds vs milliseconds confusion!
 
             ## Severity Levels (status: attribute)
             Filter logs by severity using status:LEVEL:
@@ -110,11 +111,12 @@ class LogsController
 
             Combine severities: status:(error OR warn) or status:>=error
 
-            ## Common Query Patterns
+            ## Common Query Patterns (Simplified Syntax)
             "Show errors in production" → env:production status:error
-            "Find slow API requests" → service:api @duration:>3000
-            "500 errors" → @http.status_code:>=500
-            "User errors" → @user.id:12345 status:error
+            "Find slow API requests" → service:api duration:>3000 (@ added automatically)
+            "500 errors" → http.status_code:>=500 (@ added automatically)
+            "User errors" → user.id:12345 status:error (@ added automatically)
+            "Multiple conditions" → service:api and status:error (uppercased automatically)
 
             ## Response Structure
             {
@@ -124,8 +126,8 @@ class LogsController
 
             ## MCP Usage Notes
             YOU (the LLM) should:
-            - PREFER time_range parameter ("1h", "24h", "7d") over calculating timestamps
-            - Only use from/to for precise time windows (e.g., specific incident times)
+            - Use time parameter with natural formats: "1h", "24h", "yesterday", ISO datetimes
+            - Write queries naturally - @ prefix and uppercase operators are added automatically
             - Translate user intent to Datadog syntax using USER INTENT MAPPING above
             - Follow ERROR RECOVERY MATRIX when queries fail
             - Summarize patterns, not raw JSON dumps
@@ -148,113 +150,59 @@ class LogsController
         #[Schema(
             type: 'string',
             description: <<<TEXT
-                Log search query using Datadog search syntax. Required.
+                Log search query using natural Datadog syntax. Required.
 
-                ## QUERY CONSTRUCTION ALGORITHM:
+                ✅ SIMPLIFIED SYNTAX (backend auto-normalizes):
+                - Write attributes naturally: http.status_code:500 (@ added automatically)
+                - Use lowercase operators: and/or/not (uppercased automatically)
+                - Reserved attributes work as-is: service, env, status, host, source, version, trace_id
 
-                STEP 1: Identify attribute types
-                  FOR EACH attribute in user request:
-                    IF attribute IN [service, env, status, host, source, version, trace_id]:
-                      → Use WITHOUT @ prefix
-                    ELSE:
-                      → Use WITH @ prefix (e.g., @http.status_code)
+                ## COMMON PATTERNS:
 
-                STEP 2: Apply operators
-                  - Numeric comparisons: attribute:>value, attribute:>=value, attribute:[min TO max]
-                  - Wildcards: attribute:prefix-*
-                  - Exact match: attribute:value
-                  - Multiple values: attribute:(value1 OR value2)
+                Basic:
+                - "status:error" → All error logs
+                - "service:api status:error" → API errors (implicit AND)
+                - "env:production status:error" → Production errors
 
-                STEP 3: Combine conditions
-                  - Use AND between different filter types (implicit with spaces)
-                  - Use OR for alternatives
-                  - Use NOT or - prefix to exclude
-                  - Use ( ) to group logic
+                With Custom Attributes (@ added automatically):
+                - "http.status_code:500" → HTTP 500 errors
+                - "user.id:12345" → Logs for user 12345
+                - "duration:>3000" → Slow requests (>3 seconds)
 
-                STEP 4: Validate
-                  - Check @ prefix usage is correct
-                  - Verify operators are UPPERCASE
-                  - Ensure wildcards are valid (*, ?)
-                  - Confirm quotes around spaces: @message:"error message"
+                Combining Conditions:
+                - "service:api and status:error" → Both conditions (AND uppercased automatically)
+                - "env:prod or env:staging" → Either environment (OR uppercased automatically)
+                - "status:error not service:health" → Exclude health service (NOT uppercased automatically)
+                - "(service:api or service:worker) and status:error" → Group conditions with parentheses
 
-                ## ATTRIBUTE PREFIX REFERENCE:
-
-                NO @ PREFIX (Reserved Attributes):
-                  service, env, status, host, source, version, trace_id
-
-                REQUIRES @ PREFIX (Custom Attributes):
-
-                  HTTP: @http.status_code, @http.method, @http.url, @http.request_id
-                  User: @user.id, @user.email, @user.name, @user.country
-                  Performance: @duration, @response_time, @db.statement.duration
-                  Error: @error.message, @error.kind, @error.stack, @error.code
-                  Transaction: @transaction.id, @transaction.amount, @transaction.status
-                  Deployment: @deployment.version, @deployment.canary, @container.name
-
-                DECISION RULE:
-                  IF unsure whether attribute needs @:
-                    → Assume it needs @ (custom attributes are more common)
-                    → Exception: Only the 7 reserved attributes above don't need @
-
-                ## VALIDATION RULES:
-
-                query:
-                  ✓ MUST be non-empty string
-                  ✓ Boolean operators MUST be UPPERCASE (AND/OR/NOT)
-                  ✓ Custom attributes MUST have @ prefix
-                  ✓ Reserved attributes MUST NOT have @ prefix
-
-                ## SYNTAX REFERENCE:
-
-                Boolean Operators (UPPERCASE required):
-                - AND - Both conditions (e.g., service:api AND status:error)
-                - OR - Either condition (e.g., env:prod OR env:staging)
-                - NOT or - prefix - Exclude (e.g., NOT status:debug OR -status:debug)
-                - ( ) - Group conditions (e.g., (service:api OR service:worker) AND status:error)
-                - Implicit AND: Spaces act as AND (service:api status:error = service:api AND status:error)
-
-                Numerical Operators:
-                - < > <= >= (e.g., @http.status_code:>=500, @duration:<1000)
-                - Range: [min TO max] (e.g., @http.status_code:[400 TO 499])
+                Numeric Operators:
+                - "http.status_code:>=500" → Server errors
+                - "http.status_code:[400 TO 499]" → Client errors range
+                - "duration:<1000" → Fast requests
 
                 Wildcards:
-                - * matches multiple chars (e.g., service:web-* matches web-api, web-app)
-                - ? matches single char (e.g., host:server-? matches server-1, server-a)
+                - "service:web-*" → All web services (web-api, web-app, etc.)
+                - "host:server-?" → Single character wildcard
 
                 Special Characters:
-                - Use quotes for values with spaces: @message:"connection: timeout"
-                - Or escape special chars: @message:connection\:\ timeout
-                - Free-text phrases in quotes: "database connection error"
+                - "message:\"error occurred\"" → Values with spaces need quotes
+                - "\"database timeout\"" → Free-text search
 
-                ## EXAMPLE EXECUTION:
+                ## EXAMPLES:
 
-                User: "Find API errors with status code 500 in production"
+                User: "Find API errors with 500 status in production"
+                Query: "service:api status:error http.status_code:500 env:production"
+                → Backend converts to: service:api status:error @http.status_code:500 env:production
 
-                Step 1: Identify attributes
-                  - API → service:api (reserved, no @)
-                  - errors → status:error (reserved, no @)
-                  - status code 500 → @http.status_code:500 (custom, needs @)
-                  - production → env:production (reserved, no @)
+                User: "Slow checkout requests in prod or staging"
+                Query: "service:checkout duration:>5000 and (env:prod or env:staging)"
+                → Backend converts to: service:checkout @duration:>5000 AND (env:prod OR env:staging)
 
-                Step 2-3: Combine
-                  service:api status:error @http.status_code:500 env:production
+                ## RESERVED ATTRIBUTES (no @ needed):
+                service, env, status, host, source, version, trace_id
 
-                Step 4: Validate ✓
-
-                ## QUERY EXAMPLES:
-
-                Simple:
-                - "status:error" - All error logs
-                - "service:api status:error" - API errors (implicit AND)
-
-                With Attributes:
-                - "service:api @http.status_code:500" - API with HTTP 500
-                - "@user.id:12345 service:auth" - User 12345 in auth service
-
-                Complex:
-                - "(service:api OR service:worker) AND status:error" - Errors from either service
-                - "service:payment env:prod status:error @http.status_code:>=500" - Payment server errors
-                - "@user.country:US service:checkout status:error \"payment declined\"" - US checkout payment failures
+                ## CUSTOM ATTRIBUTES (@ added automatically):
+                Everything else: http.*, user.*, error.*, duration, transaction.*, etc.
                 TEXT,
             minLength: 1
         )]
@@ -262,85 +210,48 @@ class LogsController
         #[Schema(
             type: 'string',
             description: <<<TEXT
-                Relative time range (alternative to from/to). Optional.
+                Smart time parameter that accepts multiple formats. Optional, defaults to "1h".
 
-                ## TIME PARAMETER DECISION TREE
+                ## ACCEPTED FORMATS (Auto-detected):
 
-                IF user specifies exact timestamps:
-                  → Use from + to parameters (milliseconds)
-                  → DO NOT set time_range (or use default "1h")
+                1. **Relative time** (recommended for most queries):
+                   - "1h" or "1hr" → Last 1 hour (default)
+                   - "24h" → Last 24 hours
+                   - "7d" or "7day" → Last 7 days
+                   - "15m" or "15min" → Last 15 minutes
+                   - "30d" → Last 30 days
 
-                ELSE IF user says "last N hours/days" OR no time specified:
-                  → Use time_range parameter
-                  → DO NOT set from + to
-                  → DEFAULT: time_range="1h"
+                2. **ISO 8601 datetime** (converted to milliseconds automatically):
+                   - "2024-01-15T10:00:00Z" → Single timestamp (from this time to now)
+                   - "2024-01-15T10:00:00Z/2024-01-16T10:00:00Z" → Range (from/to)
+                   - "2024-01-15T10:00:00+00:00" → With timezone
 
-                VALIDATION:
-                  ✗ NEVER set both time_range AND (from/to)
-                  ✓ ALWAYS use milliseconds (13 digits)
-                  ✓ Pattern: \d+[mhd] (e.g., "1h", "24h", "7d")
+                3. **Milliseconds** (as string or number, passed through):
+                   - "1765461420000" → Exact timestamp
+                   - "1765461420000/1765547820000" → Range in milliseconds
 
-                ## Supported formats:
-                - "15m" or "15min" - Last 15 minutes
-                - "1h" or "1hr" - Last 1 hour (default)
-                - "24h" - Last 24 hours
-                - "7d" or "7day" - Last 7 days
-                - "30d" - Last 30 days
+                4. **Natural language** (parsed intelligently):
+                   - "yesterday" → Last 24 hours
+                   - "last hour" → Last 1 hour
+                   - "today" → Since midnight today
 
-                ## Timestamp Calculations:
-                from = Date.now() - (HOURS × 3600000)
-                from = Date.now() - (DAYS × 86400000)
+                ## BENEFITS:
+                ✅ No more timestamp calculations needed
+                ✅ No more seconds vs milliseconds confusion
+                ✅ No more choosing between time_range/from/to
+                ✅ Accepts natural formats you'd expect
 
-                Conversion factors:
-                - 1 minute = 60000 ms
-                - 1 hour = 3600000 ms
-                - 1 day = 86400000 ms
-                - 1 week = 604800000 ms
+                ## EXAMPLES:
+                - time="1h" → Last hour (most common)
+                - time="2024-01-15T10:00:00Z" → From that time to now
+                - time="2024-01-15T10:00:00Z/2024-01-16T10:00:00Z" → Specific range
+                - time="24h" → Last 24 hours
+                - time="yesterday" → Yesterday's logs
 
-                Examples: "1h", "24h", "7d"
-                TEXT,
-            pattern: '^\\d+[mhdMHD](?:in|hr|ay)?$'
+                Default: "1h" (last hour)
+                TEXT
         )]
-        ?string $time_range = '1h',
-        #[Schema(
-            type: 'integer',
-            description: <<<TEXT
-                Start timestamp in milliseconds (epoch time). Optional if time_range provided.
-
-                ## VALIDATION RULES:
-                ✓ MUST be 13-digit milliseconds (not 10-digit seconds)
-                ✓ MUST be < to parameter
-                ✓ MUST be in current year range: 1735689600000-1767225599999 (2025)
-                ✗ If calculated timestamp < 1735689600000, recalculate using Date.now()
-
-                Example: 1764696580317 (represents 2025-01-02 12:03:00 UTC)
-
-                Generate with: (new DateTime('2025-01-02 12:03:00'))->getTimestamp() * 1000
-
-                Timestamp validation:
-                - 2025: 1735689600000 (Jan 1) to 1767225599999 (Dec 31)
-                - If timestamp < 10000000000: likely seconds not milliseconds → multiply by 1000
-                TEXT,
-            minimum: 0
-        )]
-        ?int $from = null,
-        #[Schema(
-            type: 'integer',
-            description: <<<TEXT
-                End timestamp in milliseconds (epoch time). Optional if time_range provided.
-
-                ## VALIDATION RULES:
-                ✓ MUST be 13-digit milliseconds (not 10-digit seconds)
-                ✓ MUST be > from parameter
-                ✓ MUST be in current year range: 1735689600000-1767225599999 (2025)
-
-                Example: 1765301380317 (represents 2025-01-09 12:03:00 UTC)
-
-                Maximum time range: Limited by your Datadog plan (typically 15 minutes to 7 days)
-                TEXT,
-            minimum: 0
-        )]
-        ?int $to = null,
+        ?string $time = '1h',
         #[Schema(
             type: 'boolean',
             description: <<<TEXT
@@ -602,31 +513,18 @@ class LogsController
         )]
         ?string $json_path = null
     ): mixed {
-        // Ensure time_range has a default value (handle null from MCP)
-        $time_range = $time_range ?? '1h';
+        // Ensure time has a default value (handle null from MCP)
+        $time = $time ?? '1h';
 
-        // Validate parameter combinations
-        $using_from_to = $from !== null || $to !== null;
-        $using_time_range = $time_range !== '1h' || !$using_from_to;  // Using non-default time_range or default when from/to not provided
-
-        if ($using_from_to && $time_range !== '1h') {
-            throw new RuntimeException('Cannot use both time_range and from/to parameters. Use either time_range OR (from + to).');
-        }
-
-        // If using from/to, validate both are provided
-        if ($using_from_to) {
-            if ($from === null || $to === null) {
-                throw new RuntimeException('Must provide both from and to parameters when using explicit timestamps.');
-            }
-            // Don't parse time_range when using from/to
-        } else {
-            // Parse time_range (defaults to '1h')
-            [$from, $to] = $this->parseTimeRange($time_range);
-        }
+        // Parse the smart time parameter (handles all formats automatically)
+        [$from, $to, $time_display] = $this->parseTime($time);
 
         if ($from >= $to) {
-            throw new RuntimeException('Parameter "from" must be less than "to"');
+            throw new RuntimeException('Parsed time range is invalid: start time must be before end time');
         }
+
+        // Auto-normalize query: add @ prefix to custom attributes, uppercase Boolean operators
+        $query = $this->normalizeQuery($query);
 
         if ($limit !== null && ($limit < 1 || $limit > 1000)) {
             throw new RuntimeException('Parameter "limit" must be between 1 and 1000');
@@ -668,9 +566,9 @@ class LogsController
 
         // Handle different output formats
         if ($format === 'count') {
-            $response = $this->formatCount($response, $query, $time_range, $from, $to);
+            $response = $this->formatCount($response, $query, $time_display, $from, $to);
         } elseif ($format === 'summary') {
-            $response = $this->formatSummary($response, $query, $time_range, $from, $to);
+            $response = $this->formatSummary($response, $query, $time_display, $from, $to);
         } else {
             // Default: full format
             $response = $this->filterTags($response, $includeTags ?? false);
@@ -759,40 +657,171 @@ class LogsController
     }
 
     /**
-     * Parses relative time range string and returns [from, to] timestamps in milliseconds.
+     * Parses smart time parameter and returns [from, to, display] timestamps.
      *
-     * @param  string  $time_range
+     * Accepts multiple formats:
+     * - Relative: "1h", "24h", "7d"
+     * - ISO 8601: "2024-01-15T10:00:00Z" or "2024-01-15T10:00:00Z/2024-01-16T10:00:00Z"
+     * - Milliseconds: "1765461420000" or "1765461420000/1765547820000"
+     * - Natural language: "yesterday", "last hour", "today"
      *
-     * @return array{int, int}
+     * @param  string  $time  The time parameter value
+     *
+     * @return array{int, int, string}  [from_ms, to_ms, display_string]
      */
-    protected function parseTimeRange(string $time_range): array
+    protected function parseTime(string $time): array
     {
-        // Parse the time range format: digits + unit (m/h/d) + optional suffix (in/hr/ay)
-        if (!preg_match('/^(\d+)([mhdMHD])(?:in|hr|ay)?$/', $time_range, $matches)) {
-            throw new RuntimeException('Invalid time_range format. Expected format: "1h", "24h", "7d", "15m", etc.');
-        }
-
-        $value = (int) $matches[1];
-        $unit = strtolower($matches[2]);
-
-        // Convert to milliseconds
-        $milliseconds_map = [
-            'm' => 60_000,      // 1 minute = 60,000ms
-            'h' => 3_600_000,   // 1 hour = 3,600,000ms
-            'd' => 86_400_000,  // 1 day = 86,400,000ms
-        ];
-
-        if (!isset($milliseconds_map[$unit])) {
-            throw new RuntimeException('Invalid time unit. Supported units: m (minutes), h (hours), d (days)');
-        }
-
-        $offset_ms = $value * $milliseconds_map[$unit];
-
-        // Calculate timestamps: from = now - offset, to = now
         $now_ms = (int) (microtime(true) * 1000);
-        $from_ms = $now_ms - $offset_ms;
 
-        return [$from_ms, $now_ms];
+        // Format 1: Relative time (e.g., "1h", "24h", "7d")
+        if (preg_match('/^(\d+)([mhdMHD])(?:in|hr|ay)?$/', $time, $matches)) {
+            $value = (int) $matches[1];
+            $unit = strtolower($matches[2]);
+
+            $milliseconds_map = [
+                'm' => 60_000,      // 1 minute
+                'h' => 3_600_000,   // 1 hour
+                'd' => 86_400_000,  // 1 day
+            ];
+
+            if (!isset($milliseconds_map[$unit])) {
+                throw new RuntimeException('Invalid time unit. Supported: m (minutes), h (hours), d (days)');
+            }
+
+            $offset_ms = $value * $milliseconds_map[$unit];
+            $from_ms = $now_ms - $offset_ms;
+
+            return [$from_ms, $now_ms, $time];
+        }
+
+        // Format 2: ISO 8601 datetime or range
+        if (str_contains($time, 'T') || str_contains($time, '-')) {
+            // Check if it's a range (contains /)
+            if (str_contains($time, '/')) {
+                [$start, $end] = explode('/', $time, 2);
+                $from_ms = $this->parseIsoOrMilliseconds($start, $now_ms);
+                $to_ms = $this->parseIsoOrMilliseconds($end, $now_ms);
+                return [$from_ms, $to_ms, $time];
+            }
+
+            // Single datetime: from that time to now
+            $from_ms = $this->parseIsoOrMilliseconds($time, $now_ms);
+            return [$from_ms, $now_ms, $time];
+        }
+
+        // Format 3: Milliseconds (single or range)
+        if (str_contains($time, '/')) {
+            [$start, $end] = explode('/', $time, 2);
+            if (ctype_digit($start) && ctype_digit($end)) {
+                $from_ms = (int) $start;
+                $to_ms = (int) $end;
+                return [$from_ms, $to_ms, $time];
+            }
+        } elseif (ctype_digit($time)) {
+            // Single milliseconds timestamp: from that time to now
+            $from_ms = (int) $time;
+            return [$from_ms, $now_ms, $time];
+        }
+
+        // Format 4: Natural language
+        $natural = strtolower(trim($time));
+        switch ($natural) {
+            case 'yesterday':
+            case 'last day':
+                $from_ms = $now_ms - 86_400_000;
+                return [$from_ms, $now_ms, 'last 24h'];
+
+            case 'last hour':
+            case 'past hour':
+                $from_ms = $now_ms - 3_600_000;
+                return [$from_ms, $now_ms, 'last 1h'];
+
+            case 'today':
+                $from_ms = (int) (strtotime('today midnight') * 1000);
+                return [$from_ms, $now_ms, 'today'];
+
+            case 'last week':
+            case 'past week':
+                $from_ms = $now_ms - 604_800_000;
+                return [$from_ms, $now_ms, 'last 7d'];
+        }
+
+        throw new RuntimeException(
+            'Invalid time format. Supported: "1h", "24h", "7d", "2024-01-15T10:00:00Z", "1765461420000", "yesterday", etc.'
+        );
+    }
+
+    /**
+     * Parses ISO 8601 datetime string or milliseconds timestamp.
+     *
+     * @param  string  $value  ISO datetime or milliseconds
+     * @param  int  $now_ms  Current time in milliseconds
+     *
+     * @return int  Timestamp in milliseconds
+     */
+    protected function parseIsoOrMilliseconds(string $value, int $now_ms): int
+    {
+        // Try parsing as milliseconds first
+        if (ctype_digit($value)) {
+            return (int) $value;
+        }
+
+        // Try parsing as ISO 8601 datetime
+        try {
+            $dt = new \DateTime($value);
+            return (int) ($dt->getTimestamp() * 1000);
+        } catch (\Exception $e) {
+            throw new RuntimeException('Invalid datetime format: '.$value.'. Expected ISO 8601 (e.g., 2024-01-15T10:00:00Z)');
+        }
+    }
+
+    /**
+     * Normalizes Datadog query by auto-adding @ prefix to custom attributes
+     * and uppercasing Boolean operators.
+     *
+     * Benefits:
+     * - LLM doesn't need to memorize which attributes need @
+     * - LLM doesn't need to remember to uppercase AND/OR/NOT
+     * - Queries work naturally without syntax errors
+     *
+     * @param  string  $query  The original query
+     *
+     * @return string  The normalized query
+     */
+    protected function normalizeQuery(string $query): string
+    {
+        // Reserved attributes (NO @ prefix needed)
+        $reserved = ['service', 'env', 'status', 'host', 'source', 'version', 'trace_id'];
+
+        // Step 1: Auto-uppercase Boolean operators (and/or/not → AND/OR/NOT)
+        // Use word boundaries to avoid matching inside words
+        $query = preg_replace_callback(
+            '/\b(and|or|not)\b/i',
+            fn ($matches) => strtoupper($matches[1]),
+            $query
+        );
+
+        // Step 2: Auto-add @ prefix to custom attributes
+        // Pattern: Match "attribute:" but not "@attribute:" or "-attribute:"
+        // This regex finds attribute names that are followed by : but not preceded by @ or -
+        $query = preg_replace_callback(
+            '/(?<![@\-])(\b[a-zA-Z_][a-zA-Z0-9_.]*):/',
+            function ($matches) use ($reserved) {
+                $attribute = $matches[1];
+
+                // Check if it's a reserved attribute
+                if (in_array($attribute, $reserved, true)) {
+                    // Keep as-is (no @ needed)
+                    return $attribute.':';
+                }
+
+                // Custom attribute: add @ prefix
+                return '@'.$attribute.':';
+            },
+            $query
+        );
+
+        return $query;
     }
 
     /**

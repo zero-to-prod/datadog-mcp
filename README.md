@@ -80,16 +80,28 @@ Alternatively, add the server configuration directly:
 
 Search and retrieve logs from your Datadog account using the Logs API v2.
 
+**✨ NEW: Simplified API with Auto-Normalization**
+- ✅ Smart time parameter accepts multiple formats (no more timestamp calculations!)
+- ✅ @ prefixes added automatically to custom attributes
+- ✅ Boolean operators (and/or/not) uppercased automatically
+- ✅ Write queries naturally without worrying about syntax
+
 **Parameters:**
-- `from` (int, required) - Start timestamp in milliseconds
-- `to` (int, required) - End timestamp in milliseconds
-- `query` (string, required) - Datadog search query
+- `query` (string, required) - Natural Datadog search query (@ and uppercase handled automatically)
+- `time` (string, optional) - Smart time parameter accepting multiple formats (default: "1h")
+  - Relative: "1h", "24h", "7d", "15m"
+  - ISO datetime: "2024-01-15T10:00:00Z" or "2024-01-15T10:00:00Z/2024-01-16T10:00:00Z"
+  - Natural language: "yesterday", "today", "last hour"
+  - Milliseconds: "1765461420000" or "1765461420000/1765547820000"
+- `limit` (int, optional) - Max logs per request, 1-1000 (default: 10)
 - `includeTags` (bool, optional) - Include tags array (default: false)
-- `limit` (int, optional) - Max logs per request, 1-1000 (default: 50)
 - `cursor` (string, optional) - Pagination cursor
 - `sort` (string, optional) - Sort order: "timestamp" or "-timestamp"
+- `format` (string, optional) - Output format: "full", "count", or "summary" (default: "full")
 - `json_path` (string, optional) - Simplified JSON path for field extraction
 - `jq_filter` (string, optional) - jq expression to transform response data
+- `jq_raw_output` (bool, optional) - Output raw text instead of JSON (default: false)
+- `jq_streaming` (bool, optional) - Collect multiple jq outputs into array (default: false)
 
 **JSON Path Examples:**
 
@@ -98,7 +110,7 @@ The `json_path` parameter provides a simplified way to extract fields without jq
 1. Get first log entry:
 ```json
 {
-  "time_range": "1h",
+  "time": "1h",
   "query": "status:error",
   "json_path": "data.0"
 }
@@ -107,7 +119,7 @@ The `json_path` parameter provides a simplified way to extract fields without jq
 2. Get service name from first log:
 ```json
 {
-  "time_range": "1h",
+  "time": "1h",
   "query": "status:error",
   "json_path": "data.0.attributes.service"
 }
@@ -116,7 +128,7 @@ The `json_path` parameter provides a simplified way to extract fields without jq
 3. Get message from first log:
 ```json
 {
-  "time_range": "1h",
+  "time": "1h",
   "query": "status:error",
   "json_path": "data.0.attributes.message"
 }
@@ -125,7 +137,7 @@ The `json_path` parameter provides a simplified way to extract fields without jq
 4. Get pagination cursor:
 ```json
 {
-  "time_range": "1h",
+  "time": "1h",
   "query": "status:info",
   "limit": 100,
   "json_path": "meta.page.after"
@@ -135,7 +147,7 @@ The `json_path` parameter provides a simplified way to extract fields without jq
 5. Extract plain text message (with raw output):
 ```json
 {
-  "time_range": "1h",
+  "time": "1h",
   "query": "status:error",
   "json_path": "data.0.attributes.message",
   "jq_raw_output": true
@@ -156,7 +168,7 @@ The `jq_filter` parameter allows you to transform the response data using jq syn
 1. Get only the first log entry:
 ```json
 {
-  "time_range": "1h",
+  "time": "1h",
   "query": "status:error",
   "jq_filter": ".data[0]"
 }
@@ -165,7 +177,7 @@ The `jq_filter` parameter allows you to transform the response data using jq syn
 2. Filter logs by service:
 ```json
 {
-  "time_range": "24h",
+  "time": "24h",
   "query": "env:production",
   "jq_filter": ".data[] | select(.attributes.service == \"api\")"
 }
@@ -174,7 +186,7 @@ The `jq_filter` parameter allows you to transform the response data using jq syn
 3. Extract only message fields:
 ```json
 {
-  "time_range": "1h",
+  "time": "1h",
   "query": "status:error",
   "jq_filter": "[.data[].attributes.message]"
 }
@@ -183,7 +195,7 @@ The `jq_filter` parameter allows you to transform the response data using jq syn
 4. Custom aggregation:
 ```json
 {
-  "time_range": "24h",
+  "time": "24h",
   "query": "status:error",
   "jq_filter": "{total: .data | length, services: [.data[].attributes.service] | unique}"
 }
@@ -196,7 +208,7 @@ For full jq syntax documentation, see: https://jqlang.github.io/jq/manual/
 Extract plain text message (without JSON quotes):
 ```json
 {
-  "time_range": "1h",
+  "time": "1h",
   "query": "status:error",
   "limit": 1,
   "jq_filter": ".data[0].attributes.message",
@@ -207,7 +219,7 @@ Extract plain text message (without JSON quotes):
 Get service names as plain text lines:
 ```json
 {
-  "time_range": "1h",
+  "time": "1h",
   "query": "status:info",
   "limit": 10,
   "jq_filter": ".data[].attributes.service",
@@ -221,7 +233,7 @@ Get service names as plain text lines:
 Get all logs as array (natural .data[] syntax):
 ```json
 {
-  "time_range": "1h",
+  "time": "1h",
   "query": "status:info",
   "limit": 10,
   "jq_filter": ".data[]",
@@ -232,7 +244,7 @@ Get all logs as array (natural .data[] syntax):
 Extract all service names:
 ```json
 {
-  "time_range": "1h",
+  "time": "1h",
   "query": "status:info",
   "limit": 10,
   "jq_filter": ".data[].attributes.service",
@@ -243,7 +255,7 @@ Extract all service names:
 Filter logs by service (streaming):
 ```json
 {
-  "time_range": "24h",
+  "time": "24h",
   "query": "env:production",
   "limit": 50,
   "jq_filter": ".data[] | select(.attributes.service == \"api\")",
@@ -251,43 +263,67 @@ Filter logs by service (streaming):
 }
 ```
 
-**Example Query:**
+**Query Syntax Examples:**
+
+Simple queries (natural syntax):
 ```
+status:error
 service:api-gateway env:production status:error
+http.status_code:500 and env:production
 ```
+
+Note: @ prefixes and uppercase Boolean operators are added automatically!
 
 **Usage Examples:**
 
-1. Get recent error logs:
-```javascript
+1. Get recent error logs (using natural time format):
+```json
 {
-  "from": 1733846400000,  // Last 24 hours
-  "to": 1733932800000,
+  "time": "24h",
   "query": "status:error env:production"
 }
 ```
 
-2. Search specific service:
-```javascript
+2. Search with custom attributes (@ added automatically):
+```json
 {
-  "from": 1733846400000,
-  "to": 1733932800000,
-  "query": "service:api-gateway env:production",
-  "limit": 100,
-  "includeTags": false
+  "time": "1h",
+  "query": "service:api http.status_code:>=500",
+  "limit": 100
 }
 ```
 
-3. Paginate through results:
-```javascript
+3. Using ISO datetime for specific time window:
+```json
+{
+  "time": "2024-01-15T10:00:00Z/2024-01-15T12:00:00Z",
+  "query": "service:checkout and duration:>5000"
+}
+```
+
+4. Natural language time:
+```json
+{
+  "time": "yesterday",
+  "query": "status:error user.id:12345"
+}
+```
+
+5. Paginate through results:
+```json
 // First request
 {
-  "from": 1733846400000,
-  "to": 1733932800000,
+  "time": "24h",
   "query": "service:web-*",
   "limit": 1000
 }
 // Use cursor from response.meta.page.after for next page
+{
+  "time": "24h",
+  "query": "service:web-*",
+  "limit": 1000,
+  "cursor": "eyJhZnRlciI6IkFRQUFBWE1rLWc4d..."
+}
 ```
 
 ### CLI Commands
