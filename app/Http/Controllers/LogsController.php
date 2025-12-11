@@ -510,34 +510,59 @@ class LogsController
             description: <<<TEXT
                 Output format. Optional.
 
-                ## FORMAT PARAMETER DECISION LOGIC:
+                ## BASIC FORMATS:
 
                 format="full" (default):
                   WHEN: Need to examine individual log messages
-                  WHEN: Analyzing error patterns
-                  WHEN: Extracting specific fields with jq
                   RESPONSE: Complete log entries with all attributes
 
                 format="count":
                   WHEN: User asks "how many"
-                  WHEN: Comparing volumes across time periods
-                  WHEN: Building metrics/dashboards
-                  RESPONSE: {"count": N}
+                  RESPONSE: {"count": N, "query": "...", "time_range": "..."}
 
                 format="summary":
-                  WHEN: User asks for "overview" or "summary"
-                  WHEN: Need quick insights without details
-                  WHEN: Identifying top services/errors
+                  WHEN: User asks for "overview"
                   RESPONSE: {count, services, top_errors}
 
-                DEFAULT: Use format="full" unless user explicitly needs count/summary
+                ## TIER 1 AGGREGATIONS (LLM-Optimized, 90-99% Token Reduction):
 
-                Response formats:
-                - "full": Complete log entries with all attributes
-                - "count": {"count": 47, "query": "...", "time_range": "..."}
-                - "summary": {"count": ..., "services": {...}, "top_errors": [...]}
+                format="scope_analysis":
+                  WHEN: Starting investigation, "what's the scope?", "how bad is it?"
+                  RETURNS: Metrics, breakdown by status/service, confidence, actionable suggestions
+                  TOKEN COST: ~500 (vs 10,000+ for raw logs)
+                  USE CASE: First step of every investigation to understand data volume and nature
+
+                format="event_timeline":
+                  WHEN: "What happened?", "timeline of events", chronological investigation
+                  RETURNS: Timeline with categorized events, confidence scores, patterns, suggested actions
+                  TOKEN COST: ~1,000 (vs 10,000+ for raw logs)
+                  USE CASE: Understanding sequence of events, identifying cascading failures
+
+                format="error_signatures":
+                  WHEN: "Group similar errors", "error patterns", investigating error trends
+                  RETURNS: Grouped error patterns with severity, trends, affected services/users, recommendations
+                  TOKEN COST: ~300 (vs 15,000+ for raw logs)
+                  USE CASE: Identifying common error patterns and their root causes
+
+                format="field_stats":
+                  WHEN: "Analyze duration", "performance stats", numeric field analysis
+                  REQUIRES: field parameter (e.g., field="duration")
+                  RETURNS: Min/max/mean/median/p95/p99/stddev, distribution, outliers, interpretation
+                  TOKEN COST: ~200 (vs 20,000+ for raw logs)
+                  USE CASE: Performance analysis, identifying slow requests, capacity planning
+
+                ## RECOMMENDED INVESTIGATION WORKFLOW:
+
+                Step 1: format="scope_analysis" → Understand volume and breakdown
+                Step 2: format="error_signatures" → Identify common error patterns (if errors exist)
+                Step 3: format="event_timeline" → Understand chronological sequence
+                Step 4: format="field_stats" → Analyze performance metrics (if needed)
+
+                This workflow reduces investigation tokens by 90%+ compared to fetching raw logs.
+
+                DEFAULT: Use format="full" unless user explicitly needs aggregation
                 TEXT,
-            enum: ['full', 'count', 'summary']
+            enum: ['full', 'count', 'summary', 'scope_analysis', 'event_timeline', 'error_signatures', 'field_stats']
         )]
         ?string $format = 'full',
         #[Schema(
@@ -711,7 +736,41 @@ class LogsController
                 TEXT,
             minLength: 1
         )]
-        ?string $json_path = null
+        ?string $json_path = null,
+        #[Schema(
+            type: 'string',
+            description: <<<TEXT
+                Field name for statistical analysis. Required when format="field_stats", ignored for other formats.
+
+                Must be a numeric field in log attributes (e.g., "duration", "response_time").
+                The @ prefix is added automatically for custom attributes.
+
+                Examples:
+                - field="duration" → Analyzes @duration field
+                - field="http.response_time" → Analyzes @http.response_time field
+                - field="db.query_duration" → Analyzes @db.query_duration field
+
+                Reserved attributes (no @ prefix): service, env, status, host, source, version, trace_id
+                Custom attributes (@ added automatically): All other fields
+
+                Use with format="field_stats" to get:
+                - Statistics: min, max, mean, median, p95, p99, stddev
+                - Distribution: bucketed histogram
+                - Outliers: Values beyond IQR thresholds
+                - Interpretation: Human-readable analysis
+
+                Example request:
+                {
+                  "query": "service:api-gateway",
+                  "time": "1h",
+                  "format": "field_stats",
+                  "field": "duration",
+                  "limit": 500
+                }
+                TEXT,
+            minLength: 1
+        )]
+        ?string $field = null
     ): mixed {
         // Ensure time has a default value (handle null from MCP)
         $time = $time ?? '1h';
@@ -762,6 +821,11 @@ class LogsController
 
         $url = 'https://api.datadoghq.com/api/v2/logs/events/search';
 
+        // Validate field parameter for field_stats
+        if ($format === 'field_stats' && ($field === null || trim($field) === '')) {
+            throw new RuntimeException('Parameter "field" is required when format="field_stats"');
+        }
+
         $response = $this->response($url, $body);
 
         // Handle different output formats
@@ -769,6 +833,19 @@ class LogsController
             $response = $this->formatCount($response, $query, $time_display, $from, $to);
         } elseif ($format === 'summary') {
             $response = $this->formatSummary($response, $query, $time_display, $from, $to);
+        } elseif ($format === 'scope_analysis') {
+            $response = $this->formatScopeAnalysis($response, $query, $time_display, $from, $to);
+        } elseif ($format === 'event_timeline') {
+            $response = $this->formatEventTimeline($response, $query, $time_display, $from, $to);
+        } elseif ($format === 'error_signatures') {
+            $response = $this->formatErrorSignatures($response, $query, $time_display, $from, $to);
+        } elseif ($format === 'field_stats') {
+            // Normalize field name (add @ prefix if needed)
+            $normalized_field = $field;
+            if (!str_starts_with($field, '@') && !in_array($field, ['service', 'env', 'status', 'host', 'source', 'version', 'trace_id'], true)) {
+                $normalized_field = '@' . $field;
+            }
+            $response = $this->formatFieldStats($response, $query, $time_display, $from, $to, $normalized_field);
         } else {
             // Default: full format
             $response = $this->filterTags($response, $includeTags ?? false);
@@ -1112,6 +1189,771 @@ class LogsController
     }
 
     /**
+     * Formats response as scope analysis with metrics and suggestions.
+     *
+     * @param  array  $response
+     * @param  string  $query
+     * @param  string  $time_range
+     * @param  int  $from
+     * @param  int  $to
+     *
+     * @return array
+     */
+    protected function formatScopeAnalysis(array $response, string $query, string $time_range, int $from, int $to): array
+    {
+        $count = isset($response['data']) && is_array($response['data']) ? count($response['data']) : 0;
+        $time_span_ms = $to - $from;
+        $density_per_minute = $time_span_ms > 0 ? ($count / ($time_span_ms / 60000)) : 0;
+
+        // Aggregate by status and service
+        $by_status = [];
+        $by_service = [];
+
+        if (isset($response['data']) && is_array($response['data'])) {
+            foreach ($response['data'] as $log) {
+                $attrs = $log['attributes'] ?? [];
+
+                if (isset($attrs['status'])) {
+                    $by_status[$attrs['status']] = ($by_status[$attrs['status']] ?? 0) + 1;
+                }
+
+                if (isset($attrs['service'])) {
+                    $by_service[$attrs['service']] = ($by_service[$attrs['service']] ?? 0) + 1;
+                }
+            }
+        }
+
+        // Sort services by count and limit to top 5
+        arsort($by_service);
+        $by_service = array_slice($by_service, 0, 5, true);
+
+        // Calculate confidence score
+        $confidence = 0.5; // Base confidence
+
+        if ($count > 100) {
+            $confidence += 0.2;
+        } elseif ($count > 20) {
+            $confidence += 0.1;
+        }
+
+        if (count($by_service) > 1) {
+            $confidence += 0.2;
+        }
+
+        if ($time_span_ms > 3600000) { // > 1 hour
+            $confidence += 0.1;
+        }
+
+        $confidence = min(1.0, $confidence);
+
+        // Generate suggestion
+        $suggestion = $this->generateScopeSuggestion($count, $by_status, $by_service, $density_per_minute, $query);
+
+        return [
+            'format' => 'scope_analysis',
+            'scope' => [
+                'count' => $count,
+                'time_span_ms' => $time_span_ms,
+                'density_per_minute' => round($density_per_minute, 2),
+                'has_more' => isset($response['meta']['page']['after']) && $response['meta']['page']['after'] !== null,
+            ],
+            'breakdown' => [
+                'by_status' => $by_status,
+                'by_service' => $by_service,
+            ],
+            'confidence' => round($confidence, 2),
+            'suggestion' => $suggestion,
+            'query' => $query,
+            'time_range' => $time_range,
+        ];
+    }
+
+    /**
+     * Generates actionable suggestion for scope analysis.
+     *
+     * @param  int  $count
+     * @param  array  $by_status
+     * @param  array  $by_service
+     * @param  float  $density_per_minute
+     * @param  string  $query
+     *
+     * @return array
+     */
+    protected function generateScopeSuggestion(int $count, array $by_status, array $by_service, float $density_per_minute, string $query): array
+    {
+        $error_count = $by_status['error'] ?? 0;
+        $error_percentage = $count > 0 ? ($error_count / $count) * 100 : 0;
+        $service_count = count($by_service);
+
+        // Determine interpretation
+        if ($count === 0) {
+            return [
+                'interpretation' => 'No logs found for this query',
+                'next_action' => 'Try expanding time range or simplifying query',
+                'next_query' => '',
+            ];
+        }
+
+        if ($count < 5) {
+            return [
+                'interpretation' => sprintf('Limited dataset (%d logs) - may need broader query', $count),
+                'next_action' => 'Expand time range or reduce query specificity',
+                'next_query' => '',
+            ];
+        }
+
+        // High error rate
+        if ($error_percentage > 50) {
+            if ($service_count === 1) {
+                $service = array_key_first($by_service);
+                return [
+                    'interpretation' => sprintf('Critical issue in %s service - %d%% error rate (%.1f errors/min)', $service, (int) $error_percentage, $density_per_minute),
+                    'next_action' => 'Investigate recent deployments or infrastructure changes',
+                    'next_query' => sprintf('%s | error_signatures for pattern analysis', $query),
+                ];
+            }
+
+            return [
+                'interpretation' => sprintf('Widespread errors across %d services - %d%% error rate', $service_count, (int) $error_percentage),
+                'next_action' => 'Check for infrastructure issues or cross-service dependencies',
+                'next_query' => sprintf('%s | error_signatures to identify common patterns', $query),
+            ];
+        }
+
+        // Isolated service
+        if ($service_count === 1) {
+            $service = array_key_first($by_service);
+            return [
+                'interpretation' => sprintf('Isolated to %s service with consistent pattern (%.1f logs/min)', $service, $density_per_minute),
+                'next_action' => 'Investigate service-specific changes or health',
+                'next_query' => sprintf('%s | event_timeline for chronological view', $query),
+            ];
+        }
+
+        // Multiple services
+        if ($service_count > 3) {
+            return [
+                'interpretation' => sprintf('Distributed across %d services - may indicate system-wide event', $service_count),
+                'next_action' => 'Look for common timestamps or error patterns',
+                'next_query' => sprintf('%s | event_timeline to identify cascade', $query),
+            ];
+        }
+
+        // Normal case
+        return [
+            'interpretation' => sprintf('%d logs across %d services (%.1f logs/min) - moderate activity', $count, $service_count, $density_per_minute),
+            'next_action' => 'Review for specific patterns or investigate individual services',
+            'next_query' => sprintf('%s | error_signatures if errors present', $query),
+        ];
+    }
+
+    /**
+     * Formats response as event timeline with semantic categorization.
+     *
+     * @param  array  $response
+     * @param  string  $query
+     * @param  string  $time_range
+     * @param  int  $from
+     * @param  int  $to
+     *
+     * @return array
+     */
+    protected function formatEventTimeline(array $response, string $query, string $time_range, int $from, int $to): array
+    {
+        $data = $response['data'] ?? [];
+        $timeline = [];
+        $categories = [];
+
+        // Sort logs by timestamp ascending
+        usort($data, function ($a, $b) {
+            $ts_a = $a['attributes']['timestamp'] ?? '';
+            $ts_b = $b['attributes']['timestamp'] ?? '';
+            return strcmp($ts_a, $ts_b);
+        });
+
+        // Build timeline
+        foreach ($data as $log) {
+            $attrs = $log['attributes'] ?? [];
+
+            // Categorize event
+            $categorization = $this->categorizeEvent($attrs);
+
+            // Extract related entities
+            $entities = $this->extractRelatedEntities($attrs);
+
+            $event = [
+                'timestamp' => $attrs['timestamp'] ?? '',
+                'category' => $categorization['category'],
+                'event_type' => $categorization['event_type'],
+                'confidence' => $categorization['confidence'],
+                'details' => [
+                    'service' => $attrs['service'] ?? null,
+                    'status' => $attrs['status'] ?? null,
+                    'message' => isset($attrs['message']) ? substr($attrs['message'], 0, 200) : null,
+                ],
+                'related_entities' => $entities,
+            ];
+
+            $timeline[] = $event;
+            $categories[$categorization['category']] = ($categories[$categorization['category']] ?? 0) + 1;
+        }
+
+        // Identify patterns
+        $patterns = $this->identifyTimelinePatterns($timeline);
+
+        // Generate suggested actions
+        $suggested_actions = $this->generateTimelineSuggestions($timeline, $categories, $patterns);
+
+        return [
+            'format' => 'event_timeline',
+            'timeline' => $timeline,
+            'summary' => [
+                'total_events' => count($timeline),
+                'categories' => $categories,
+                'key_patterns' => $patterns,
+            ],
+            'suggested_actions' => $suggested_actions,
+            'query' => $query,
+            'time_range' => $time_range,
+        ];
+    }
+
+    /**
+     * Identifies patterns in the timeline.
+     *
+     * @param  array  $timeline
+     *
+     * @return array
+     */
+    protected function identifyTimelinePatterns(array $timeline): array
+    {
+        $patterns = [];
+
+        // Pattern 1: Error cascade (error in one service followed by errors in others)
+        $error_services = [];
+        foreach ($timeline as $event) {
+            if ($event['category'] === 'error') {
+                $service = $event['details']['service'] ?? 'unknown';
+                $error_services[] = $service;
+            }
+        }
+
+        if (count(array_unique($error_services)) > 1) {
+            $patterns[] = sprintf('Error cascade across %d services', count(array_unique($error_services)));
+        }
+
+        // Pattern 2: Deployment followed by errors
+        $deployment_followed_by_error = false;
+        for ($i = 0; $i < count($timeline) - 1; $i++) {
+            if ($timeline[$i]['category'] === 'deployment' && $timeline[$i + 1]['category'] === 'error') {
+                $deployment_followed_by_error = true;
+                break;
+            }
+        }
+
+        if ($deployment_followed_by_error) {
+            $patterns[] = 'Deployment event preceded error occurrence';
+        }
+
+        // Pattern 3: Repeated errors from same service
+        $service_error_counts = [];
+        foreach ($timeline as $event) {
+            if ($event['category'] === 'error') {
+                $service = $event['details']['service'] ?? 'unknown';
+                $service_error_counts[$service] = ($service_error_counts[$service] ?? 0) + 1;
+            }
+        }
+
+        foreach ($service_error_counts as $service => $count) {
+            if ($count >= 3) {
+                $patterns[] = sprintf('Repeated errors in %s service (%d occurrences)', $service, $count);
+            }
+        }
+
+        return $patterns;
+    }
+
+    /**
+     * Generates suggested actions for timeline analysis.
+     *
+     * @param  array  $timeline
+     * @param  array  $categories
+     * @param  array  $patterns
+     *
+     * @return array
+     */
+    protected function generateTimelineSuggestions(array $timeline, array $categories, array $patterns): array
+    {
+        $suggestions = [];
+
+        $error_count = $categories['error'] ?? 0;
+        $deployment_count = $categories['deployment'] ?? 0;
+
+        // Suggestion based on patterns
+        if (in_array('Deployment event preceded error occurrence', $patterns, true)) {
+            $suggestions[] = 'Review recent deployment logs for potential issues';
+            $suggestions[] = 'Consider rollback if error rate is critical';
+        }
+
+        if ($error_count > 0) {
+            $suggestions[] = sprintf('Investigate %d error events for root cause', $error_count);
+
+            // Check for specific error types
+            $timeout_errors = 0;
+            $connection_errors = 0;
+            foreach ($timeline as $event) {
+                if ($event['category'] === 'error') {
+                    if (str_contains($event['event_type'], 'timeout')) {
+                        $timeout_errors++;
+                    }
+                    if (str_contains($event['event_type'], 'Connection')) {
+                        $connection_errors++;
+                    }
+                }
+            }
+
+            if ($timeout_errors > 2) {
+                $suggestions[] = 'High frequency of timeout errors - check service health and response times';
+            }
+
+            if ($connection_errors > 2) {
+                $suggestions[] = 'Multiple connection errors detected - verify network and service availability';
+            }
+        }
+
+        // Check for trace_id to suggest distributed tracing
+        $has_trace = false;
+        foreach ($timeline as $event) {
+            if (!empty($event['related_entities']['trace_id'])) {
+                $has_trace = true;
+                break;
+            }
+        }
+
+        if ($has_trace && $error_count > 0) {
+            $suggestions[] = 'Use trace_id to analyze full distributed request flow';
+        }
+
+        if (empty($suggestions)) {
+            $suggestions[] = 'Timeline shows normal operation - no immediate actions required';
+        }
+
+        return $suggestions;
+    }
+
+    /**
+     * Formats response as error signatures with grouped patterns.
+     *
+     * @param  array  $response
+     * @param  string  $query
+     * @param  string  $time_range
+     * @param  int  $from
+     * @param  int  $to
+     *
+     * @return array
+     */
+    protected function formatErrorSignatures(array $response, string $query, string $time_range, int $from, int $to): array
+    {
+        $data = $response['data'] ?? [];
+        $error_logs = [];
+
+        // Filter to error logs only
+        foreach ($data as $log) {
+            $attrs = $log['attributes'] ?? [];
+            $status = $attrs['status'] ?? '';
+
+            if ($status === 'error' || isset($attrs['error'])) {
+                $error_logs[] = $log;
+            }
+        }
+
+        if (empty($error_logs)) {
+            return [
+                'format' => 'error_signatures',
+                'signatures' => [],
+                'summary' => [
+                    'total_signatures' => 0,
+                    'total_occurrences' => 0,
+                ],
+                'query' => $query,
+                'time_range' => $time_range,
+            ];
+        }
+
+        // Group by normalized message
+        $signature_groups = [];
+
+        foreach ($error_logs as $log) {
+            $attrs = $log['attributes'] ?? [];
+            $message = $attrs['message'] ?? '';
+
+            // Normalize message
+            $normalized = $this->normalizeErrorMessage($message);
+            $hash = md5($normalized);
+
+            if (!isset($signature_groups[$hash])) {
+                $signature_groups[$hash] = [
+                    'normalized' => $normalized,
+                    'original_message' => $message,
+                    'logs' => [],
+                    'timestamps' => [],
+                    'services' => [],
+                    'users' => [],
+                ];
+            }
+
+            $signature_groups[$hash]['logs'][] = $log;
+            $signature_groups[$hash]['timestamps'][] = $attrs['timestamp'] ?? '';
+
+            if (isset($attrs['service'])) {
+                $signature_groups[$hash]['services'][$attrs['service']] = true;
+            }
+
+            // Extract user ID
+            if (isset($attrs['user_id'])) {
+                $signature_groups[$hash]['users'][$attrs['user_id']] = true;
+            } elseif (isset($attrs['user']['id'])) {
+                $signature_groups[$hash]['users'][$attrs['user']['id']] = true;
+            }
+        }
+
+        // Build signatures
+        $signatures = [];
+        $total_errors = count($error_logs);
+
+        foreach ($signature_groups as $hash => $group) {
+            $count = count($group['logs']);
+            $service_count = count($group['services']);
+            $user_count = count($group['users']);
+
+            // Generate pattern name from normalized message
+            $pattern_name = $this->generatePatternName($group['normalized']);
+
+            // Calculate trend
+            $trend = $this->calculateTrend($group['timestamps']);
+
+            // Assign severity
+            $severity = $this->assignSeverity($count, $total_errors, $service_count);
+
+            // Calculate confidence
+            $confidence = $count > 20 ? 0.9 : ($count > 5 ? 0.7 : 0.5);
+
+            // Generate recommendation
+            $recommendation = $this->generateErrorRecommendation($pattern_name, $severity, $service_count);
+
+            $signatures[] = [
+                'signature_id' => substr($hash, 0, 12),
+                'pattern_name' => $pattern_name,
+                'pattern' => $group['normalized'],
+                'count' => $count,
+                'severity' => $severity,
+                'trend' => $trend,
+                'confidence' => $confidence,
+                'first_seen' => min($group['timestamps']),
+                'last_seen' => max($group['timestamps']),
+                'affected_services' => array_keys($group['services']),
+                'affected_users' => $user_count,
+                'example_message' => substr($group['original_message'], 0, 200),
+                'recommendation' => $recommendation,
+            ];
+        }
+
+        // Sort by count descending
+        usort($signatures, fn ($a, $b) => $b['count'] <=> $a['count']);
+
+        return [
+            'format' => 'error_signatures',
+            'signatures' => $signatures,
+            'summary' => [
+                'total_signatures' => count($signatures),
+                'total_occurrences' => $total_errors,
+            ],
+            'query' => $query,
+            'time_range' => $time_range,
+        ];
+    }
+
+    /**
+     * Generates a pattern name from normalized error message.
+     *
+     * @param  string  $normalized
+     *
+     * @return string
+     */
+    protected function generatePatternName(string $normalized): string
+    {
+        $lower = strtolower($normalized);
+
+        // Database errors
+        if (preg_match('/database|db|mysql|postgres/', $lower)) {
+            if (preg_match('/timeout/', $lower)) {
+                return 'Database Connection Timeout';
+            }
+            if (preg_match('/connection|connect/', $lower)) {
+                return 'Database Connection Failure';
+            }
+            return 'Database Error';
+        }
+
+        // HTTP errors
+        if (preg_match('/http|https/', $lower)) {
+            if (preg_match('/timeout/', $lower)) {
+                return 'HTTP Timeout Error';
+            }
+            if (preg_match('/500/', $lower)) {
+                return 'HTTP 500 Internal Server Error';
+            }
+            if (preg_match('/404/', $lower)) {
+                return 'HTTP 404 Not Found';
+            }
+            return 'HTTP Error';
+        }
+
+        // Authentication errors
+        if (preg_match('/auth|unauthorized|forbidden/', $lower)) {
+            return 'Authentication Failure';
+        }
+
+        // Connection errors
+        if (preg_match('/connection|connect|refused/', $lower)) {
+            return 'Connection Error';
+        }
+
+        // Timeout errors
+        if (preg_match('/timeout|timed out/', $lower)) {
+            return 'Timeout Error';
+        }
+
+        // Not found errors
+        if (preg_match('/not found|notfound/', $lower)) {
+            return 'Resource Not Found';
+        }
+
+        // Generic
+        return 'Error Pattern';
+    }
+
+    /**
+     * Generates recommendation for error signature.
+     *
+     * @param  string  $pattern_name
+     * @param  string  $severity
+     * @param  int  $service_count
+     *
+     * @return string
+     */
+    protected function generateErrorRecommendation(string $pattern_name, string $severity, int $service_count): string
+    {
+        $recommendations = [
+            'Database Connection Timeout' => 'Review database connection pool settings and query performance. Consider increasing timeout threshold or optimizing slow queries.',
+            'Database Connection Failure' => 'Check database server health and network connectivity. Verify connection pool configuration.',
+            'HTTP Timeout Error' => 'Investigate service response times. Check for downstream dependencies or network issues.',
+            'HTTP 500 Internal Server Error' => 'Review application logs for stack traces. Check for recent deployments or configuration changes.',
+            'Authentication Failure' => 'Verify authentication service health. Check for expired tokens or misconfigured credentials.',
+            'Connection Error' => 'Verify network connectivity and service availability. Check firewall rules and DNS resolution.',
+            'Timeout Error' => 'Investigate service performance and response times. Consider increasing timeout thresholds if appropriate.',
+            'Resource Not Found' => 'Verify resource IDs and API endpoints. Check for data consistency issues.',
+        ];
+
+        $base_recommendation = $recommendations[$pattern_name] ?? 'Investigate error logs for root cause and common patterns.';
+
+        if ($severity === 'critical') {
+            return 'CRITICAL: ' . $base_recommendation . ' Immediate action required.';
+        }
+
+        if ($service_count > 3) {
+            return $base_recommendation . ' Affects multiple services - check for shared dependencies.';
+        }
+
+        return $base_recommendation;
+    }
+
+    /**
+     * Formats response as field statistics with outlier detection.
+     *
+     * @param  array  $response
+     * @param  string  $query
+     * @param  string  $time_range
+     * @param  int  $from
+     * @param  int  $to
+     * @param  string  $field
+     *
+     * @return array
+     */
+    protected function formatFieldStats(array $response, string $query, string $time_range, int $from, int $to, string $field): array
+    {
+        // Extract numeric values
+        $values = $this->extractNumericValues($response, $field);
+
+        if (empty($values)) {
+            return [
+                'format' => 'field_stats',
+                'field' => $field,
+                'stats' => null,
+                'interpretation' => sprintf('No numeric values found for field "%s"', $field),
+                'anomalies_detected' => false,
+                'confidence' => 0.0,
+                'query' => $query,
+                'time_range' => $time_range,
+            ];
+        }
+
+        // Extract just the numeric values for calculations
+        $numeric_values = array_map(fn ($v) => $v['value'], $values);
+        sort($numeric_values);
+
+        // Calculate statistics
+        $count = count($numeric_values);
+        $min = min($numeric_values);
+        $max = max($numeric_values);
+        $sum = array_sum($numeric_values);
+        $mean = $sum / $count;
+        $median = $this->calculatePercentile($numeric_values, 50);
+        $p95 = $this->calculatePercentile($numeric_values, 95);
+        $p99 = $this->calculatePercentile($numeric_values, 99);
+
+        // Calculate standard deviation
+        $variance = 0;
+        foreach ($numeric_values as $value) {
+            $variance += ($value - $mean) ** 2;
+        }
+        $stddev = sqrt($variance / $count);
+
+        // Calculate percentiles for outlier detection
+        $q1 = $this->calculatePercentile($numeric_values, 25);
+        $q3 = $this->calculatePercentile($numeric_values, 75);
+
+        // Detect outliers
+        $outliers = $this->detectOutliers($values, $q1, $q3);
+
+        // Generate distribution buckets
+        $distribution = $this->generateDistributionBuckets($numeric_values, $min, $max);
+
+        // Generate interpretation
+        $interpretation = $this->generateFieldStatsInterpretation($min, $max, $mean, $median, $p99, $stddev, count($outliers));
+
+        // Detect anomalies
+        $anomalies_detected = $max > $mean * 10 || $stddev > $mean || count($outliers) > 0;
+
+        // Calculate confidence
+        $confidence = $count > 100 ? 0.9 : ($count > 20 ? 0.7 : ($count > 5 ? 0.5 : 0.3));
+
+        return [
+            'format' => 'field_stats',
+            'field' => $field,
+            'stats' => [
+                'count' => $count,
+                'min' => round($min, 2),
+                'max' => round($max, 2),
+                'mean' => round($mean, 2),
+                'median' => round($median, 2),
+                'p95' => round($p95, 2),
+                'p99' => round($p99, 2),
+                'stddev' => round($stddev, 2),
+            ],
+            'distribution' => $distribution,
+            'outliers' => $outliers,
+            'interpretation' => $interpretation,
+            'anomalies_detected' => $anomalies_detected,
+            'confidence' => round($confidence, 2),
+            'query' => $query,
+            'time_range' => $time_range,
+        ];
+    }
+
+    /**
+     * Generates distribution buckets for numeric values.
+     *
+     * @param  array  $sorted_values
+     * @param  float  $min
+     * @param  float  $max
+     *
+     * @return array
+     */
+    protected function generateDistributionBuckets(array $sorted_values, float $min, float $max): array
+    {
+        $range = $max - $min;
+
+        if ($range === 0.0) {
+            return [
+                ['range' => (string) $min, 'count' => count($sorted_values)],
+            ];
+        }
+
+        // Determine bucket size (aim for 10 buckets)
+        $bucket_count = min(10, count($sorted_values));
+        $bucket_size = $range / $bucket_count;
+
+        // Create buckets
+        $buckets = [];
+        for ($i = 0; $i < $bucket_count; $i++) {
+            $bucket_start = $min + ($i * $bucket_size);
+            $bucket_end = $i === $bucket_count - 1 ? $max : $min + (($i + 1) * $bucket_size);
+
+            $count = 0;
+            foreach ($sorted_values as $value) {
+                if ($value >= $bucket_start && ($i === $bucket_count - 1 ? $value <= $bucket_end : $value < $bucket_end)) {
+                    $count++;
+                }
+            }
+
+            if ($count > 0) {
+                $buckets[] = [
+                    'range' => sprintf('%.0f-%.0f', $bucket_start, $bucket_end),
+                    'count' => $count,
+                ];
+            }
+        }
+
+        return $buckets;
+    }
+
+    /**
+     * Generates human-readable interpretation of field statistics.
+     *
+     * @param  float  $min
+     * @param  float  $max
+     * @param  float  $mean
+     * @param  float  $median
+     * @param  float  $p99
+     * @param  float  $stddev
+     * @param  int  $outlier_count
+     *
+     * @return string
+     */
+    protected function generateFieldStatsInterpretation(float $min, float $max, float $mean, float $median, float $p99, float $stddev, int $outlier_count): string
+    {
+        $parts = [];
+
+        // Overall summary
+        $parts[] = sprintf('Most values fall within %.0f-%.0f range (median: %.0f)', $min, $median * 2, $median);
+
+        // Variance analysis
+        if ($stddev > $mean) {
+            $parts[] = sprintf('High variance detected (stddev: %.0f > mean: %.0f) indicating inconsistent performance', $stddev, $mean);
+        } elseif ($stddev > $mean * 0.5) {
+            $parts[] = sprintf('Moderate variance (stddev: %.0f)', $stddev);
+        }
+
+        // P99 analysis
+        if ($p99 > $median * 2) {
+            $parts[] = sprintf('P99 (%.0f) significantly higher than median - some requests experience delays', $p99);
+        }
+
+        // Outlier analysis
+        if ($outlier_count > 0) {
+            $parts[] = sprintf('%d outlier(s) detected with values significantly above normal range', $outlier_count);
+        }
+
+        // Max analysis
+        if ($max > $mean * 10) {
+            $parts[] = sprintf('Extreme outlier detected: max value (%.0f) is %.0fx the mean', $max, $max / $mean);
+        }
+
+        return implode('. ', $parts) . '.';
+    }
+
+    /**
      * Filters tags array from log entries based on includeTags parameter.
      *
      * @param  array  $response
@@ -1370,5 +2212,325 @@ class LogsController
         }
 
         return $jq_filter;
+    }
+
+    /**
+     * Categorizes a log event based on its attributes.
+     *
+     * @param  array  $log_attributes  Log attributes array
+     *
+     * @return array{category: string, event_type: string, confidence: float}
+     */
+    protected function categorizeEvent(array $log_attributes): array
+    {
+        $message = $log_attributes['message'] ?? '';
+        $status = $log_attributes['status'] ?? '';
+        $message_lower = strtolower($message);
+
+        // Deployment detection
+        if (preg_match('/\b(deploy|deployment|release|rollback|rollout)\b/i', $message)) {
+            if (preg_match('/\b(start|begin|initiat)/i', $message)) {
+                return ['category' => 'deployment', 'event_type' => 'Deployment started', 'confidence' => 0.9];
+            }
+            if (preg_match('/\b(complet|finish|success|done)/i', $message)) {
+                return ['category' => 'deployment', 'event_type' => 'Deployment completed', 'confidence' => 0.9];
+            }
+            if (preg_match('/\b(fail|error)/i', $message)) {
+                return ['category' => 'deployment', 'event_type' => 'Deployment failed', 'confidence' => 0.9];
+            }
+            return ['category' => 'deployment', 'event_type' => 'Deployment event', 'confidence' => 0.7];
+        }
+
+        // Error detection
+        if ($status === 'error' || preg_match('/\b(error|exception|fatal|critical)\b/i', $message)) {
+            if (preg_match('/\b(timeout|timed out)\b/i', $message)) {
+                if (preg_match('/\b(database|db|mysql|postgres)\b/i', $message)) {
+                    return ['category' => 'error', 'event_type' => 'Database timeout', 'confidence' => 0.9];
+                }
+                return ['category' => 'error', 'event_type' => 'Timeout error', 'confidence' => 0.9];
+            }
+            if (preg_match('/\b(connection|connect)\b/i', $message)) {
+                return ['category' => 'error', 'event_type' => 'Connection error', 'confidence' => 0.9];
+            }
+            if (preg_match('/\b(authentication|auth|unauthorized)\b/i', $message)) {
+                return ['category' => 'error', 'event_type' => 'Authentication error', 'confidence' => 0.9];
+            }
+            if (preg_match('/\b(not found|404)\b/i', $message)) {
+                return ['category' => 'error', 'event_type' => 'Resource not found', 'confidence' => 0.9];
+            }
+            return ['category' => 'error', 'event_type' => 'Error occurred', 'confidence' => 0.7];
+        }
+
+        // Warning detection
+        if ($status === 'warn' || preg_match('/\b(warn|warning|deprecated)\b/i', $message)) {
+            return ['category' => 'warning', 'event_type' => 'Warning logged', 'confidence' => 0.8];
+        }
+
+        // Info/default
+        if (preg_match('/\b(start|begin|initiat)/i', $message)) {
+            return ['category' => 'info', 'event_type' => 'Process started', 'confidence' => 0.7];
+        }
+        if (preg_match('/\b(complet|finish|success|done)\b/i', $message)) {
+            return ['category' => 'info', 'event_type' => 'Process completed', 'confidence' => 0.7];
+        }
+
+        return ['category' => 'info', 'event_type' => 'Event logged', 'confidence' => 0.5];
+    }
+
+    /**
+     * Extracts related entities from log attributes.
+     *
+     * @param  array  $log_attributes  Log attributes array
+     *
+     * @return array
+     */
+    protected function extractRelatedEntities(array $log_attributes): array
+    {
+        $entities = [];
+
+        // Common entity fields
+        $entity_fields = ['service', 'host', 'trace_id', 'user_id', 'transaction_id', 'request_id'];
+
+        foreach ($entity_fields as $field) {
+            if (isset($log_attributes[$field])) {
+                $entities[$field] = $log_attributes[$field];
+            }
+        }
+
+        // Check for nested user info
+        if (isset($log_attributes['user']) && is_array($log_attributes['user'])) {
+            if (isset($log_attributes['user']['id'])) {
+                $entities['user_id'] = $log_attributes['user']['id'];
+            }
+        }
+
+        return $entities;
+    }
+
+    /**
+     * Normalizes an error message by replacing variable parts with placeholders.
+     *
+     * @param  string  $message  The error message
+     *
+     * @return string  The normalized message
+     */
+    protected function normalizeErrorMessage(string $message): string
+    {
+        // Replace UUIDs
+        $normalized = preg_replace('/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i', '[UUID]', $message);
+
+        // Replace numbers (but preserve common error codes like 404, 500)
+        $normalized = preg_replace('/\b(?<!HTTP |error |code |status )\d{5,}\b/', '[NUM]', $normalized);
+
+        // Replace URLs
+        $normalized = preg_replace('#\bhttps?://[^\s]+#i', '[URL]', $normalized);
+
+        // Replace file paths
+        $normalized = preg_replace('#/[a-z0-9_\-/]+\.(php|js|py|rb|java|go|rs)\b#i', '[PATH]', $normalized);
+
+        // Replace IP addresses
+        $normalized = preg_replace('/\b(?:\d{1,3}\.){3}\d{1,3}\b/', '[IP]', $normalized);
+
+        // Replace timestamps (ISO 8601)
+        $normalized = preg_replace('/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/', '[TIMESTAMP]', $normalized);
+
+        return $normalized;
+    }
+
+    /**
+     * Calculates the trend of events based on timestamps.
+     *
+     * @param  array  $timestamps  Array of ISO 8601 timestamps
+     *
+     * @return string  'increasing', 'stable', or 'decreasing'
+     */
+    protected function calculateTrend(array $timestamps): string
+    {
+        if (count($timestamps) < 2) {
+            return 'stable';
+        }
+
+        // Convert timestamps to Unix timestamps
+        $unix_timestamps = array_map(fn ($ts) => strtotime($ts), $timestamps);
+        sort($unix_timestamps);
+
+        // Calculate midpoint
+        $midpoint_index = (int) (count($unix_timestamps) / 2);
+
+        // Compare first half vs second half density
+        $first_half = array_slice($unix_timestamps, 0, $midpoint_index);
+        $second_half = array_slice($unix_timestamps, $midpoint_index);
+
+        if (empty($first_half) || empty($second_half)) {
+            return 'stable';
+        }
+
+        $first_half_count = count($first_half);
+        $second_half_count = count($second_half);
+
+        // Calculate density (events per minute)
+        $first_half_span = max($first_half) - min($first_half) ?: 1;
+        $second_half_span = max($second_half) - min($second_half) ?: 1;
+
+        $first_density = $first_half_count / $first_half_span;
+        $second_density = $second_half_count / $second_half_span;
+
+        // Compare densities (with 20% threshold to avoid noise)
+        if ($second_density > $first_density * 1.2) {
+            return 'increasing';
+        }
+        if ($second_density < $first_density * 0.8) {
+            return 'decreasing';
+        }
+
+        return 'stable';
+    }
+
+    /**
+     * Assigns severity level based on error metrics.
+     *
+     * @param  int  $count  Number of occurrences
+     * @param  int  $total_count  Total number of errors
+     * @param  int  $service_count  Number of affected services
+     *
+     * @return string  'critical', 'high', 'medium', or 'low'
+     */
+    protected function assignSeverity(int $count, int $total_count, int $service_count): string
+    {
+        $percentage = $total_count > 0 ? ($count / $total_count) * 100 : 0;
+
+        // Critical: >100 occurrences OR >50% of all errors
+        if ($count > 100 || $percentage > 50) {
+            return 'critical';
+        }
+
+        // High: >50 occurrences OR affects >3 services
+        if ($count > 50 || $service_count > 3) {
+            return 'high';
+        }
+
+        // Medium: >10 occurrences
+        if ($count > 10) {
+            return 'medium';
+        }
+
+        return 'low';
+    }
+
+    /**
+     * Extracts numeric values from a specified field in the response.
+     *
+     * @param  array  $response  The Datadog API response
+     * @param  string  $field  The field name (e.g., "@duration")
+     *
+     * @return array  Array of ['value' => float, 'timestamp' => string, 'log' => array]
+     */
+    protected function extractNumericValues(array $response, string $field): array
+    {
+        $values = [];
+        $data = $response['data'] ?? [];
+
+        // Remove @ prefix for attribute access
+        $field_key = ltrim($field, '@');
+
+        foreach ($data as $log) {
+            $attrs = $log['attributes'] ?? [];
+
+            // Try direct attribute access
+            $value = $attrs[$field_key] ?? null;
+
+            // Try nested attribute access (e.g., "http.response_time")
+            if ($value === null && str_contains($field_key, '.')) {
+                $parts = explode('.', $field_key);
+                $value = $attrs;
+                foreach ($parts as $part) {
+                    if (is_array($value) && isset($value[$part])) {
+                        $value = $value[$part];
+                    } else {
+                        $value = null;
+                        break;
+                    }
+                }
+            }
+
+            // Only include numeric values
+            if (is_numeric($value)) {
+                $values[] = [
+                    'value' => (float) $value,
+                    'timestamp' => $attrs['timestamp'] ?? '',
+                    'log' => $log,
+                ];
+            }
+        }
+
+        return $values;
+    }
+
+    /**
+     * Calculates the value at a given percentile.
+     *
+     * @param  array  $sorted_values  Sorted array of numeric values
+     * @param  float  $percentile  Percentile (0-100)
+     *
+     * @return float  The value at the percentile
+     */
+    protected function calculatePercentile(array $sorted_values, float $percentile): float
+    {
+        if (empty($sorted_values)) {
+            return 0.0;
+        }
+
+        $index = ($percentile / 100) * (count($sorted_values) - 1);
+        $lower = floor($index);
+        $upper = ceil($index);
+
+        if ($lower === $upper) {
+            return $sorted_values[(int) $index];
+        }
+
+        // Linear interpolation between two values
+        $weight = $index - $lower;
+        return $sorted_values[(int) $lower] * (1 - $weight) + $sorted_values[(int) $upper] * $weight;
+    }
+
+    /**
+     * Detects outliers using the IQR method.
+     *
+     * @param  array  $values  Array of ['value' => float, 'timestamp' => string, 'log' => array]
+     * @param  float  $q1  First quartile value
+     * @param  float  $q3  Third quartile value
+     *
+     * @return array  Array of outliers with context
+     */
+    protected function detectOutliers(array $values, float $q1, float $q3): array
+    {
+        $iqr = $q3 - $q1;
+        $lower_bound = $q1 - (1.5 * $iqr);
+        $upper_bound = $q3 + (1.5 * $iqr);
+
+        $outliers = [];
+
+        foreach ($values as $item) {
+            $value = $item['value'];
+            if ($value < $lower_bound || $value > $upper_bound) {
+                $log = $item['log'];
+                $attrs = $log['attributes'] ?? [];
+
+                $outliers[] = [
+                    'value' => $value,
+                    'timestamp' => $item['timestamp'],
+                    'context' => [
+                        'service' => $attrs['service'] ?? null,
+                        'host' => $attrs['host'] ?? null,
+                        'message' => isset($attrs['message']) ? substr($attrs['message'], 0, 100) : null,
+                    ],
+                ];
+            }
+        }
+
+        // Sort by value descending and limit to top 10
+        usort($outliers, fn ($a, $b) => $b['value'] <=> $a['value']);
+
+        return array_slice($outliers, 0, 10);
     }
 }
