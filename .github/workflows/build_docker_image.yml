@@ -46,6 +46,7 @@ jobs:
           cache-from: type=gha
           tags: datadog-mcp:test
           build-args: |
+            VERSION=${{ env.VERSION }}
             QEMU_CPU=max
           labels: |
             org.opencontainers.image.title=Datadog Mcp MCP Server
@@ -94,6 +95,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
+            VERSION=${{ env.VERSION }}
             QEMU_CPU=max
           tags: |
             davidsmith3/datadog-mcp:latest

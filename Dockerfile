@@ -7,6 +7,9 @@ RUN composer install --no-dev --optimize-autoloader
 
 FROM dunglas/frankenphp:1-php8.4-alpine AS production
 
+ARG VERSION=1.0.0
+ENV MCP_VERSION=$VERSION
+
 COPY Caddyfile /etc/frankenphp/Caddyfile
 
 COPY --from=build /app/vendor /app/vendor

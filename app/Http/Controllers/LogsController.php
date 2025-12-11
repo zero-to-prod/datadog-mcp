@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers;
 
-use App\Http\Requests\LogsSearchRequest;
 use Mcp\Capability\Attribute\McpTool;
 use Mcp\Capability\Attribute\Schema;
 use Mcp\Schema\ToolAnnotations;
@@ -174,12 +173,10 @@ class LogsController
             ],
         ];
 
-        $page_params = array_filter(
-            LogsSearchRequest::from([
-                LogsSearchRequest::limit => $limit,
-                LogsSearchRequest::cursor => $cursor,
-            ])->toArray()
-        );
+        $page_params = array_filter([
+            'limit' => $limit,
+            'cursor' => $cursor,
+        ], static fn($v) => $v !== null);
 
         if (!empty($page_params)) {
             $body['page'] = $page_params;
@@ -238,7 +235,7 @@ class LogsController
                 $error_details = implode(
                     '; ',
                     array_map(
-                        fn($error) => $error['detail'] ?? $error['title'] ?? 'Unknown error',
+                        static fn($error) => $error['detail'] ?? $error['title'] ?? 'Unknown error',
                         $error_body['errors']
                     )
                 );
@@ -272,14 +269,13 @@ class LogsController
             return $response;
         }
 
-        // Strip tags from each log entry in data array
         if (isset($response['data']) && is_array($response['data'])) {
             foreach ($response['data'] as &$log) {
                 if (isset($log['attributes']['tags'])) {
                     unset($log['attributes']['tags']);
                 }
             }
-            unset($log); // Break reference
+            unset($log);
         }
 
         return $response;
