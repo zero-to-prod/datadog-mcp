@@ -17,16 +17,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Create .env
-        run: touch .env
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+          extensions: mbstring, xml, ctype, json
+          coverage: none
 
-      - name: Set PHP version in .env
-        run: |
-          echo "PHP_COMPOSER=${{ matrix.php-version }}" >> .env
-          echo "PHP_VERSION=${{ matrix.php-version }}" >> .env
+      - name: Install dependencies
+        run: composer update --no-interaction --prefer-dist --optimize-autoloader
 
-      - name: Install dependencies (composer update) for PHP
-        run: sh dock composer update
-
-      - name: Run PHPUnit tests for PHP
-        run: sh dock test
+      - name: Run PHPUnit tests
+        run: vendor/bin/phpunit

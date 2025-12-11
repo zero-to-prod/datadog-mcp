@@ -11,19 +11,19 @@
     "time": "2025-12-08",
     "authors": [
         {
-            "name": "david_smith",
+            "name": "David Smith",
             "email": "dave0016@gmail.com",
-            "homepage": "https://github.com/zero-to-prod/datadog-mcp",
+            "homepage": "https://github.com/zero-to-prod",
             "role": "maintainer"
         }
     ],
-    "homepage": "https://github.com/davidsmith3/datadog-mcp",
+    "homepage": "https://github.com/zero-to-prod/datadog-mcp",
     "support": {
         "email": "dave0016@gmail.com",
-        "issues": "https://github.com/davidsmith3/datadog-mcp/issues",
-        "source": "https://github.com/davidsmith3/datadog-mcp",
-        "docs": "https://davidsmith3.github.io/datadog-mcp/",
-        "security": "https://github.com/davidsmith3/datadog-mcp/blob/main/SECURITY.md"
+        "issues": "https://github.com/zero-to-prod/datadog-mcp/issues",
+        "source": "https://github.com/zero-to-prod/datadog-mcp",
+        "docs": "https://zero-to-prod.github.io/datadog-mcp/",
+        "security": "https://github.com/zero-to-prod/datadog-mcp/blob/main/SECURITY.md"
     },
     "funding": [
         {
@@ -38,8 +38,7 @@
         "psr/log": "^3.0",
         "mcp/sdk": "^0.1.0",
         "nyholm/psr7": "^1.8",
-        "nyholm/psr7-server": "^1.1",
-        "laminas/laminas-httphandlerrunner": "^2.0"
+        "nyholm/psr7-server": "^1.1"
     },
     "autoload": {
         "psr-4": {

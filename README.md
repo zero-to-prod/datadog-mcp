@@ -18,8 +18,6 @@
 - [Quick Start](#quick-start)
 - [Usage](#usage)
 - [Docker Image](#docker)
-- [Local Development](./LOCAL_DEVELOPMENT.md)
-- [Image Development](./IMAGE_DEVELOPMENT.md)
 - [Contributing](#contributing)
 
 ## Introduction
@@ -154,7 +152,7 @@ docker run -d -p 8091:80 \
 - `DD_APPLICATION_KEY` - Your Datadog application key
 
 **Optional:**
-- `MCP_DEBUG=false` - Enable debug logging (default: false)
+- `APP_DEBUG=false` - Enable debug logging (default: false)
 
 ### Full Example with All Options
 
@@ -162,7 +160,7 @@ docker run -d -p 8091:80 \
 docker run -d -p 8091:80 \
   -e DD_API_KEY=your_api_key_here \
   -e DD_APPLICATION_KEY=your_app_key_here \
-  -e MCP_DEBUG=false \
+  -e APP_DEBUG=false \
   -v mcp-sessions:/app/storage/mcp-sessions \
   --name datadog-mcp \
   davidsmith3/datadog-mcp:latest
@@ -181,7 +179,7 @@ services:
     environment:
       - DD_API_KEY=${DD_API_KEY}
       - DD_APPLICATION_KEY=${DD_APPLICATION_KEY}
-      - MCP_DEBUG=false
+      - APP_DEBUG=false
     volumes:
       - mcp-sessions:/app/storage/mcp-sessions
     restart: unless-stopped

@@ -1,0 +1,15 @@
+{
+  "symbol-whitelist": [
+    "PHPUnit\\Framework\\TestCase",
+    "PHPUnit\\Framework\\Attributes\\Test",
+    "RuntimeException"
+  ],
+  "php-core-extensions": [
+    "Core",
+    "date",
+    "pcre",
+    "standard",
+    "SPL"
+  ],
+  "scan-files": []
+}

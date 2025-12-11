@@ -3,13 +3,12 @@ services:
     build:
       context: .
       args:
-        VERSION: ${MCP_VERSION:-0.0.0}
+        VERSION: ${APP_VERSION:-0.0.0}
     ports:
       - "8081:80"
     volumes:
       - mcp-sessions:/app/storage/mcp-sessions
     environment:
-      - MCP_VERSION=${MCP_VERSION:-0.0.0}
       - DD_API_KEY=${DD_API_KEY}
       - DD_APPLICATION_KEY=${DD_APPLICATION_KEY}
     restart: unless-stopped
@@ -26,7 +25,8 @@ services:
       - .:/app
       - ./Caddyfile:/etc/frankenphp/Caddyfile:ro
     environment:
-      - MCP_VERSION=${MCP_VERSION:-0.0.0-dev}
+      - APP_DEBUG=${APP_DEBUG:-false}
+      - APP_VERSION=${APP_VERSION:-0.0.0-dev}
       - DD_API_KEY=${DD_API_KEY}
       - DD_APPLICATION_KEY=${DD_APPLICATION_KEY}
     command: frankenphp run --config /etc/frankenphp/Caddyfile
