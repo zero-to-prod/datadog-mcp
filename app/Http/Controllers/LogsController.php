@@ -22,10 +22,13 @@ class LogsController
         description: <<<TEXT
             Search Datadog logs with time-based filtering, full-text queries, and pagination.
 
+            CRITICAL: Calculate timestamps for year current year.
+            Using wrong year = empty results. Timestamps must be milliseconds (13 digits).
+
             ## Critical Rules
             - Reserved attributes (NO @): service, env, status, host, source, version, trace_id
             - Custom attributes (@ REQUIRED): @http.status_code, @user.id, @duration, @error.message, etc.
-            - Timestamps: MUST be milliseconds (multiply Unix seconds × 1000)
+            - Timestamps: MUST be milliseconds for current year (multiply Unix seconds × 1000)
             - Boolean operators: UPPERCASE only (AND, OR, NOT)
             - Wildcards: * (multi-char), ? (single-char)
             - Attribute names are case-sensitive
@@ -118,11 +121,23 @@ class LogsController
             - Summarize patterns, not raw JSON dumps
             - Present insights in human-readable format
 
-            ## Common Errors
+            ## Troubleshooting Empty Results
+            If query returns no data (data=[]):
+            1. Wrong year? Verify timestamps are for current year
+            2. Seconds not milliseconds? Ensure 13 digits (e.g., 1765461420000 not 1765461420)
+            3. Time range too narrow? Try expanding from 1h → 24h → 7d
+            4. Wrong query syntax? Verify @ prefix on custom attributes
+            5. Service/env names wrong? Double-check spelling and case
+
+            Timestamp validation:
+            - 2025: 1735689600000 (Jan 1) to 1767225599999 (Dec 31)
+            - 2024: 1704067200000 (Jan 1) to 1735689599999 (Dec 31)
+            If your timestamp is outside current year range, recalculate using Date.now()
+
+            ## Other Common Errors
             "from must be less than to" → Verify timestamp order
             "HTTP 400" → Check @ prefix on custom attrs, UPPERCASE operators, query syntax
-            Empty results → Query too restrictive, verify service names, expand time range
-            Wrong logs → Verify @ prefix usage (custom=@, reserved=no @)
+            Wrong logs returned → Verify @ prefix usage (custom=@, reserved=no @)
 
             ## Performance Tips
             - Start with service/env filters to narrow scope
@@ -270,7 +285,7 @@ class LogsController
             type: 'integer',
             description: <<<TEXT
                 Maximum number of logs to return per request. Optional.
-                Default: 50 (if not specified)
+                Default: 10 (if not specified)
                 Maximum: 1000 (API enforced limit)
                 Use smaller values (10-50) for faster responses
                 Use larger values (100-1000) to reduce number of pagination requests
@@ -279,7 +294,7 @@ class LogsController
             minimum: 1,
             maximum: 1000
         )]
-        int $limit = 50,
+        int $limit = 10,
         #[Schema(
             type: 'string',
             description: <<<TEXT
