@@ -22,15 +22,67 @@ class LogsController
         description: <<<TEXT
             Search Datadog logs with time-based filtering, full-text queries, and pagination.
 
-            ## Time Range Options
-            **EASY MODE**: Use time_range parameter with simple strings: "1h", "24h", "7d"
-            **ADVANCED**: Use from/to parameters with millisecond timestamps for precise control
+            ## USER INTENT MAPPING
 
-            Examples with time_range:
-            - time_range="1h" → Last 1 hour (recommended for most queries)
-            - time_range="24h" → Last 24 hours
-            - time_range="7d" → Last 7 days
-            - time_range="15m" → Last 15 minutes
+            "Show me errors" / "Find errors":
+              → query: "status:error"
+              → time_range: "1h"
+              → limit: 10
+
+            "How many errors":
+              → query: "status:error"
+              → format: "count"
+              → time_range: "1h"
+
+            "Find [SERVICE] errors":
+              → query: "service:SERVICE status:error"
+              → time_range: "1h"
+
+            "Show me 500 errors":
+              → query: "@http.status_code:500"
+              → time_range: "1h"
+
+            "Errors for user [ID]":
+              → query: "@user.id:ID status:error"
+              → time_range: "24h"
+
+            "Slow requests":
+              → query: "@duration:>3000"  (>3 seconds)
+              → time_range: "1h"
+
+            "Errors in production":
+              → query: "env:production status:error"
+              → time_range: "1h"
+
+            "Get latest error message":
+              → query: "status:error"
+              → limit: 1
+              → sort: "-timestamp"
+              → jq_filter: ".data[0].attributes.message"
+
+            "Count errors by service":
+              → query: "status:error"
+              → limit: 1000
+              → jq_filter: ".data | group_by(.attributes.service) | map({service: .[0].attributes.service, count: length})"
+
+            ## ERROR RECOVERY MATRIX
+
+            | Error Symptom | Root Cause | Solution |
+            |--------------|------------|----------|
+            | data=[] | Query too restrictive | Try broader time_range: 1h→24h→7d |
+            | data=[] | Wrong @ prefix | Reserved attrs: remove @. Custom attrs: add @ |
+            | data=[] | Service name wrong | Verify with broader query: status:error |
+            | HTTP 400 | Lowercase operators | Change and→AND, or→OR, not→NOT |
+            | HTTP 400 | Malformed query | Check: quotes, @prefix, operator case |
+            | "from must be < to" | Timestamps reversed | Swap from/to values |
+            | Timestamp out of range | Used seconds not ms | Multiply by 1000 |
+            | Timestamp year wrong | Calculation error | Use: Date.now() - (hours * 3600000) |
+
+            RECOVERY PROTOCOL:
+            1. IF data=[] AND time_range="1h" → Retry with time_range="24h"
+            2. IF still data=[] → Retry with simpler query (just "status:error")
+            3. IF HTTP 400 → Check @ prefix rules and operator case
+            4. IF timestamp error → Switch to time_range parameter
 
             ## Critical Rules
             - Reserved attributes (NO @): service, env, status, host, source, version, trace_id
@@ -40,71 +92,29 @@ class LogsController
             - Wildcards: * (multi-char), ? (single-char)
             - Attribute names are case-sensitive
 
+            ## Time Range Options
+            **EASY MODE**: Use time_range parameter with simple strings: "1h", "24h", "7d"
+            **ADVANCED**: Use from/to parameters with millisecond timestamps for precise control
+
+            Examples with time_range:
+            - time_range="1h" → Last 1 hour (recommended for most queries)
+            - time_range="24h" → Last 24 hours
+            - time_range="7d" → Last 7 days
+
             ## Severity Levels (status: attribute)
-            Filter logs by severity using status:LEVEL (from highest to lowest priority):
-            - status:emergency - System unusable, immediate action required
-            - status:alert - Action must be taken immediately
-            - status:critical - Critical conditions
+            Filter logs by severity using status:LEVEL:
             - status:error - Error conditions (most common for troubleshooting)
             - status:warn - Warning conditions
-            - status:notice - Normal but significant condition
             - status:info - Informational messages
             - status:debug - Debug-level messages
 
             Combine severities: status:(error OR warn) or status:>=error
 
             ## Common Query Patterns
-            "Show errors in production" → env:production status:error (last 1h)
-            "Find slow API requests" → service:api @duration:>3000 (last 1h)
-            "500 errors" → @http.status_code:>=500 (last 1h)
-            "User errors" → @user.id:12345 status:error (last 24h)
-            "Database issues" → service:database status:error (last 1h)
-            "Payment failures yesterday" → service:payment status:error (yesterday)
-
-            ## Syntax Quick Reference
-
-            Reserved (no @):
-            service:api-gateway | env:production | status:error | host:web-01 | source:docker | version:1.2.3
-
-            Custom (need @):
-            @http.status_code:500 | @user.email:user@example.com | @duration:>3000 | @error.message:"timeout"
-
-            Boolean:
-            service:api AND status:error
-            env:prod OR env:staging
-            status:error -service:health-check (exclude)
-            (service:api OR service:worker) AND status:error
-
-            Numerical:
-            @http.status_code:>=500 | @duration:>5000 | @http.status_code:[400 TO 499]
-
-            Wildcards:
-            service:web-* | @user.email:*@example.com
-
-            ## Common Attributes (all need @)
-            HTTP: @http.status_code, @http.method, @http.url, @http.request_id
-            User: @user.id, @user.email, @user.name, @user.country
-            Performance: @duration (ms), @response_time, @db.statement.duration
-            Error: @error.message, @error.kind, @error.stack, @error.code
-            Transaction: @transaction.id, @transaction.amount, @transaction.status
-            Deployment: @deployment.version, @deployment.canary, @container.name
-
-            ## Query Examples by Complexity
-
-            Basic:
-            service:api status:error
-            env:production status:warn
-            status:error "timeout"
-
-            With Attributes:
-            service:api @http.status_code:500
-            service:checkout @duration:>5000
-            @user.email:*@example.com status:error
-
-            Complex:
-            (service:api OR service:worker) AND status:error
-            service:payment env:prod status:error @transaction.amount:>1000
-            env:prod AND -@deployment.canary:true AND @http.status_code:>=500
+            "Show errors in production" → env:production status:error
+            "Find slow API requests" → service:api @duration:>3000
+            "500 errors" → @http.status_code:>=500
+            "User errors" → @user.id:12345 status:error
 
             ## Response Structure
             {
@@ -112,64 +122,14 @@ class LogsController
               "meta": {"page": {"after": "cursor_or_null"}}
             }
 
-            ## Timestamps (milliseconds)
-            now = Date.now()
-            1h_ago = now - 3600000
-            24h_ago = now - 86400000
-            7d_ago = now - 604800000
-            15min_ago = now - 900000
-
-            Conversions: 1sec=1000ms, 1min=60000ms, 1hr=3600000ms, 1day=86400000ms
-
-            ## Pagination
-            First request: cursor = null
-            Next pages: cursor = response.meta.page.after
-            Last page: response.meta.page.after is null
-            Reuse all params (from, to, query, limit) with new cursor
-
-            ## Workflow (Recommended)
-            1. Use time_range: time_range="1h" (much easier!)
-            2. Build query: "service:api status:error"
-            3. Call with limit=10
-            4. Check response.data[] for logs
-            5. If response.meta.page.after exists, more data available
-
-            Alternative (Advanced):
-            1. Calculate timestamps: from = now() - 3600000, to = now()
-            2-5. Same as above
-
             ## MCP Usage Notes
             YOU (the LLM) should:
             - PREFER time_range parameter ("1h", "24h", "7d") over calculating timestamps
             - Only use from/to for precise time windows (e.g., specific incident times)
-            - Translate user intent to Datadog syntax
+            - Translate user intent to Datadog syntax using USER INTENT MAPPING above
+            - Follow ERROR RECOVERY MATRIX when queries fail
             - Summarize patterns, not raw JSON dumps
             - Present insights in human-readable format
-
-            ## Troubleshooting Empty Results
-            If query returns no data (data=[]):
-            1. Wrong year? Verify timestamps are for current year
-            2. Seconds not milliseconds? Ensure 13 digits (e.g., 1765461420000 not 1765461420)
-            3. Time range too narrow? Try expanding from 1h → 24h → 7d
-            4. Wrong query syntax? Verify @ prefix on custom attributes
-            5. Service/env names wrong? Double-check spelling and case
-
-            Timestamp validation:
-            - 2025: 1735689600000 (Jan 1) to 1767225599999 (Dec 31)
-            - 2024: 1704067200000 (Jan 1) to 1735689599999 (Dec 31)
-            If your timestamp is outside current year range, recalculate using Date.now()
-
-            ## Other Common Errors
-            "from must be less than to" → Verify timestamp order
-            "HTTP 400" → Check @ prefix on custom attrs, UPPERCASE operators, query syntax
-            Wrong logs returned → Verify @ prefix usage (custom=@, reserved=no @)
-
-            ## Performance Tips
-            - Start with service/env filters to narrow scope
-            - Use status:error or status:warn for issue-focused queries
-            - Start with limit=10, increase if needed
-            - Keep includeTags=false unless needed (tags add 100+ items per log)
-            - Avoid time ranges >24h without filters
 
             ## Result Interpretation
             When presenting to users:
@@ -190,24 +150,61 @@ class LogsController
             description: <<<TEXT
                 Log search query using Datadog search syntax. Required.
 
-                SYNTAX REFERENCE:
+                ## QUERY CONSTRUCTION ALGORITHM:
 
-                Reserved Attributes (NO @ prefix):
-                - service:value - Service name (e.g., service:api-gateway)
-                - env:value - Environment (e.g., env:production, env:staging)
-                - status:value - Log level (e.g., status:error, status:warn, status:info, status:debug)
-                - host:value - Hostname (e.g., host:web-01)
-                - source:value - Log source (e.g., source:docker, source:nginx)
-                - version:value - App version (e.g., version:2.1.0)
+                STEP 1: Identify attribute types
+                  FOR EACH attribute in user request:
+                    IF attribute IN [service, env, status, host, source, version, trace_id]:
+                      → Use WITHOUT @ prefix
+                    ELSE:
+                      → Use WITH @ prefix (e.g., @http.status_code)
 
-                Custom Attributes (@ prefix REQUIRED):
-                - @attribute:value - Any custom attribute (e.g., @http.status_code:500)
-                - @nested.path:value - Nested attributes use dots (e.g., @user.profile.age:25)
-                - Attribute searches are CASE-SENSITIVE
+                STEP 2: Apply operators
+                  - Numeric comparisons: attribute:>value, attribute:>=value, attribute:[min TO max]
+                  - Wildcards: attribute:prefix-*
+                  - Exact match: attribute:value
+                  - Multiple values: attribute:(value1 OR value2)
 
-                Wildcards:
-                - * matches multiple chars (e.g., service:web-* matches web-api, web-app)
-                - ? matches single char (e.g., host:server-? matches server-1, server-a)
+                STEP 3: Combine conditions
+                  - Use AND between different filter types (implicit with spaces)
+                  - Use OR for alternatives
+                  - Use NOT or - prefix to exclude
+                  - Use ( ) to group logic
+
+                STEP 4: Validate
+                  - Check @ prefix usage is correct
+                  - Verify operators are UPPERCASE
+                  - Ensure wildcards are valid (*, ?)
+                  - Confirm quotes around spaces: @message:"error message"
+
+                ## ATTRIBUTE PREFIX REFERENCE:
+
+                NO @ PREFIX (Reserved Attributes):
+                  service, env, status, host, source, version, trace_id
+
+                REQUIRES @ PREFIX (Custom Attributes):
+
+                  HTTP: @http.status_code, @http.method, @http.url, @http.request_id
+                  User: @user.id, @user.email, @user.name, @user.country
+                  Performance: @duration, @response_time, @db.statement.duration
+                  Error: @error.message, @error.kind, @error.stack, @error.code
+                  Transaction: @transaction.id, @transaction.amount, @transaction.status
+                  Deployment: @deployment.version, @deployment.canary, @container.name
+
+                DECISION RULE:
+                  IF unsure whether attribute needs @:
+                    → Assume it needs @ (custom attributes are more common)
+                    → Exception: Only the 7 reserved attributes above don't need @
+
+                ## VALIDATION RULES:
+
+                query:
+                  ✓ MUST be non-empty string
+                  ✓ Boolean operators MUST be UPPERCASE (AND/OR/NOT)
+                  ✓ Custom attributes MUST have @ prefix
+                  ✓ Reserved attributes MUST NOT have @ prefix
+
+                ## SYNTAX REFERENCE:
 
                 Boolean Operators (UPPERCASE required):
                 - AND - Both conditions (e.g., service:api AND status:error)
@@ -216,59 +213,48 @@ class LogsController
                 - ( ) - Group conditions (e.g., (service:api OR service:worker) AND status:error)
                 - Implicit AND: Spaces act as AND (service:api status:error = service:api AND status:error)
 
-                Numerical Operators (for faceted numeric attributes):
+                Numerical Operators:
                 - < > <= >= (e.g., @http.status_code:>=500, @duration:<1000)
                 - Range: [min TO max] (e.g., @http.status_code:[400 TO 499])
 
+                Wildcards:
+                - * matches multiple chars (e.g., service:web-* matches web-api, web-app)
+                - ? matches single char (e.g., host:server-? matches server-1, server-a)
+
                 Special Characters:
-                - Use quotes for values with spaces or special chars: @message:"connection: timeout"
+                - Use quotes for values with spaces: @message:"connection: timeout"
                 - Or escape special chars: @message:connection\:\ timeout
                 - Free-text phrases in quotes: "database connection error"
 
-                QUERY CONSTRUCTION EXAMPLES:
+                ## EXAMPLE EXECUTION:
 
-                Simple queries:
-                - "service:api-gateway" - All logs from api-gateway
+                User: "Find API errors with status code 500 in production"
+
+                Step 1: Identify attributes
+                  - API → service:api (reserved, no @)
+                  - errors → status:error (reserved, no @)
+                  - status code 500 → @http.status_code:500 (custom, needs @)
+                  - production → env:production (reserved, no @)
+
+                Step 2-3: Combine
+                  service:api status:error @http.status_code:500 env:production
+
+                Step 4: Validate ✓
+
+                ## QUERY EXAMPLES:
+
+                Simple:
                 - "status:error" - All error logs
-                - "env:production" - All production logs
-
-                Combined filters:
                 - "service:api status:error" - API errors (implicit AND)
-                - "service:api AND status:error" - API errors (explicit AND)
-                - "service:checkout env:prod status:warn" - Checkout warnings in production
 
-                Boolean logic:
-                - "service:api AND (status:error OR status:warn)" - API errors or warnings
-                - "env:prod AND NOT service:health-check" - Production excluding health checks
-                - "(service:api OR service:worker) status:error" - Errors from either service
-
-                Custom attributes:
+                With Attributes:
                 - "service:api @http.status_code:500" - API with HTTP 500
                 - "@user.id:12345 service:auth" - User 12345 in auth service
-                - "@transaction.amount:>1000 status:error" - Failed high-value transactions
 
-                Wildcards:
-                - "service:web-* env:prod" - All web-* services in prod
-                - "@user.email:*@example.com" - All example.com emails
-                - "host:server-?? env:prod" - Two-char server IDs in prod
-
-                Text search:
-                - "\"database timeout\"" - Exact phrase anywhere in logs
-                - "service:api \"connection refused\"" - API logs with specific error text
-                - "timeout error service:payment" - Logs containing timeout OR error in payment service
-
-                Complex real-world queries:
-                - "service:payment env:prod status:error @http.status_code:>=500" - Payment server errors in prod
-                - "(service:api OR service:worker) AND env:prod AND -@deployment.canary:true" - Non-canary prod errors
+                Complex:
+                - "(service:api OR service:worker) AND status:error" - Errors from either service
+                - "service:payment env:prod status:error @http.status_code:>=500" - Payment server errors
                 - "@user.country:US service:checkout status:error \"payment declined\"" - US checkout payment failures
-                - "service:database @query.duration:>5000 status:warn" - Slow database queries (>5s)
-
-                Best practices:
-                - Start with most restrictive filters (service, env) to narrow results quickly
-                - Use status:error/warn to focus on issues
-                - Add custom attributes (@...) for specific field filtering
-                - Use quotes for exact phrase matching in free-text
-                - Test with narrow time ranges first to verify query correctness
                 TEXT,
             minLength: 1
         )]
@@ -277,19 +263,41 @@ class LogsController
             type: 'string',
             description: <<<TEXT
                 Relative time range (alternative to from/to). Optional.
-                Automatically calculates timestamps from now going back in time.
-                Default: "1h" (last 1 hour) if no time parameters provided.
 
-                Supported formats:
+                ## TIME PARAMETER DECISION TREE
+
+                IF user specifies exact timestamps:
+                  → Use from + to parameters (milliseconds)
+                  → DO NOT set time_range (or use default "1h")
+
+                ELSE IF user says "last N hours/days" OR no time specified:
+                  → Use time_range parameter
+                  → DO NOT set from + to
+                  → DEFAULT: time_range="1h"
+
+                VALIDATION:
+                  ✗ NEVER set both time_range AND (from/to)
+                  ✓ ALWAYS use milliseconds (13 digits)
+                  ✓ Pattern: \d+[mhd] (e.g., "1h", "24h", "7d")
+
+                ## Supported formats:
                 - "15m" or "15min" - Last 15 minutes
                 - "1h" or "1hr" - Last 1 hour (default)
                 - "24h" - Last 24 hours
                 - "7d" or "7day" - Last 7 days
                 - "30d" - Last 30 days
 
-                Examples: "1h", "24h", "7d"
+                ## Timestamp Calculations:
+                from = Date.now() - (HOURS × 3600000)
+                from = Date.now() - (DAYS × 86400000)
 
-                Note: Use either time_range OR (from + to), not both.
+                Conversion factors:
+                - 1 minute = 60000 ms
+                - 1 hour = 3600000 ms
+                - 1 day = 86400000 ms
+                - 1 week = 604800000 ms
+
+                Examples: "1h", "24h", "7d"
                 TEXT,
             pattern: '^\\d+[mhdMHD](?:in|hr|ay)?$'
         )]
@@ -298,11 +306,20 @@ class LogsController
             type: 'integer',
             description: <<<TEXT
                 Start timestamp in milliseconds (epoch time). Optional if time_range provided.
-                Defines the minimum timestamp for logs to retrieve.
-                Example: 1764696580317 (represents 2025-01-02 12:03:00 UTC)
-                Tip: Generate with: (new DateTime('2025-01-02 12:03:00'))->getTimestamp() * 1000
 
-                Note: Use either time_range OR (from + to), not both.
+                ## VALIDATION RULES:
+                ✓ MUST be 13-digit milliseconds (not 10-digit seconds)
+                ✓ MUST be < to parameter
+                ✓ MUST be in current year range: 1735689600000-1767225599999 (2025)
+                ✗ If calculated timestamp < 1735689600000, recalculate using Date.now()
+
+                Example: 1764696580317 (represents 2025-01-02 12:03:00 UTC)
+
+                Generate with: (new DateTime('2025-01-02 12:03:00'))->getTimestamp() * 1000
+
+                Timestamp validation:
+                - 2025: 1735689600000 (Jan 1) to 1767225599999 (Dec 31)
+                - If timestamp < 10000000000: likely seconds not milliseconds → multiply by 1000
                 TEXT,
             minimum: 0
         )]
@@ -311,11 +328,15 @@ class LogsController
             type: 'integer',
             description: <<<TEXT
                 End timestamp in milliseconds (epoch time). Optional if time_range provided.
-                Defines the maximum timestamp for logs to retrieve. Must be greater than \$from parameter.
-                Example: 1765301380317 (represents 2025-01-09 12:03:00 UTC)
-                Maximum time range: Limited by your Datadog plan (typically 15 minutes to 7 days)
 
-                Note: Use either time_range OR (from + to), not both.
+                ## VALIDATION RULES:
+                ✓ MUST be 13-digit milliseconds (not 10-digit seconds)
+                ✓ MUST be > from parameter
+                ✓ MUST be in current year range: 1735689600000-1767225599999 (2025)
+
+                Example: 1765301380317 (represents 2025-01-09 12:03:00 UTC)
+
+                Maximum time range: Limited by your Datadog plan (typically 15 minutes to 7 days)
                 TEXT,
             minimum: 0
         )]
@@ -335,10 +356,19 @@ class LogsController
             type: 'integer',
             description: <<<TEXT
                 Maximum number of logs to return per request. Optional.
+
+                ## VALIDATION RULES:
+                ✓ MUST be 1-1000
+                ✓ Start with 10 for exploratory queries
+                ✓ Use 100+ for comprehensive searches
+
                 Default: 10 (if not specified)
                 Maximum: 1000 (API enforced limit)
-                Use smaller values (10-20) for faster responses
-                Use larger values (100-1000) to reduce number of pagination requests
+
+                Performance tips:
+                - 10-20: Faster responses, good for initial queries
+                - 100-1000: Reduces pagination requests for large datasets
+
                 Example: 10, 50, 1000
                 TEXT,
             minimum: 1,
@@ -349,11 +379,35 @@ class LogsController
             type: 'string',
             description: <<<TEXT
                 Pagination cursor for retrieving next page of results. Optional.
-                Leave null/empty for the first request.
-                For subsequent pages: use the value from previous response's meta.page.after field.
-                When cursor is provided, continues from where the previous request ended.
-                Cursor expires after a short time period (typically 1-5 minutes).
+
+                ## PAGINATION STATE MACHINE:
+
+                STATE 1: Initial Request
+                  cursor: null (or omit parameter)
+                  ACTION: Make first API call
+                  NEXT: Go to STATE 2
+
+                STATE 2: Process Response
+                  CHECK: response.meta.page.after
+                  IF null:
+                    → TERMINAL STATE (no more data)
+                  IF non-null string:
+                    → Go to STATE 3
+
+                STATE 3: Fetch Next Page
+                  cursor: <value from response.meta.page.after>
+                  PRESERVE: query, time_range/from/to, limit, format, jq_filter
+                  ACTION: Make API call with same parameters + cursor
+                  NEXT: Go to STATE 2
+
+                ## VALIDATION RULES:
+                ✓ MUST be from previous response.meta.page.after
+                ✓ MUST be null/omitted on first request
+                ✗ NEVER fabricate cursor values
+
                 Example: "eyJhZnRlciI6IkFRQUFBWE1rLWc4d..." (base64-encoded string)
+
+                Cursor expires after a short time period (typically 1-5 minutes).
                 TEXT,
             minLength: 1
         )]
@@ -375,20 +429,33 @@ class LogsController
             type: 'string',
             description: <<<TEXT
                 Output format. Optional.
-                Determines what data is returned in the response.
 
-                - "full" (default): Returns complete log entries with all attributes
-                - "count": Returns only the total count of matching logs (no log data)
-                  Perfect for: dashboards, health checks, "how many errors?" queries
-                  Response: {"count": 47, "query": "...", "time_range": "..."}
+                ## FORMAT PARAMETER DECISION LOGIC:
 
-                - "summary": Returns aggregated statistics without individual log entries
-                  Includes: count, time range, top services, top error messages
-                  Response: {"count": ..., "services": {...}, "top_errors": [...]}
+                format="full" (default):
+                  WHEN: Need to examine individual log messages
+                  WHEN: Analyzing error patterns
+                  WHEN: Extracting specific fields with jq
+                  RESPONSE: Complete log entries with all attributes
 
-                Use "count" when you only need volume metrics.
-                Use "summary" for quick insights without full log data.
-                Use "full" when you need to analyze individual log entries.
+                format="count":
+                  WHEN: User asks "how many"
+                  WHEN: Comparing volumes across time periods
+                  WHEN: Building metrics/dashboards
+                  RESPONSE: {"count": N}
+
+                format="summary":
+                  WHEN: User asks for "overview" or "summary"
+                  WHEN: Need quick insights without details
+                  WHEN: Identifying top services/errors
+                  RESPONSE: {count, services, top_errors}
+
+                DEFAULT: Use format="full" unless user explicitly needs count/summary
+
+                Response formats:
+                - "full": Complete log entries with all attributes
+                - "count": {"count": 47, "query": "...", "time_range": "..."}
+                - "summary": {"count": ..., "services": {...}, "top_errors": [...]}
                 TEXT,
             enum: ['full', 'count', 'summary']
         )]
@@ -398,26 +465,48 @@ class LogsController
             description: <<<TEXT
                 jq filter expression to transform the response data. Optional.
 
-                Applies jq syntax to filter, transform, or extract specific data from the response.
-                The jq filter is applied AFTER format processing.
+                ## JQ FILTER TEMPLATES:
+
+                Extract first N logs:
+                  jq_filter: ".data[:N]"
+                  jq_streaming: false
+
+                Count logs:
+                  jq_filter: ".data | length"
+                  jq_streaming: false
+
+                Get unique values from field:
+                  jq_filter: "[.data[].attributes.FIELD] | unique"
+                  jq_streaming: false
+
+                Custom object per log:
+                  jq_filter: ".data[] | {KEY: .attributes.FIELD, ...}"
+                  jq_streaming: true  ← REQUIRED when using .data[]
+
+                Filter logs by condition:
+                  jq_filter: "[.data[] | select(.attributes.FIELD == VALUE)]"
+                  jq_streaming: false  ← [] already creates array
+
+                Extract single field as array:
+                  jq_filter: "[.data[].attributes.FIELD]"
+                  jq_streaming: false
+
+                Group and count:
+                  jq_filter: ".data | group_by(.attributes.FIELD) | map({key: .[0].attributes.FIELD, count: length})"
+                  jq_streaming: false
+
+                ## CRITICAL RULES:
+                ✓ IF jq outputs multiple values (uses .data[] without []), SET jq_streaming=true
+                ✓ IF jq outputs single value (wrapped in [] or uses | map), SET jq_streaming=false
+                ✗ NEVER use .data[] without either [] wrapper OR jq_streaming=true
 
                 Return types: jq filters can return any JSON value (object, array, string, number, boolean, null).
 
                 Examples:
-                - ".data[0]" - Get only the first log entry (returns: object)
-                - "[.data[]]" - Get all log entries as array (returns: array)
-                - ".data | length" - Get count of logs (returns: number)
-                - "[.data[].attributes.service] | unique" - Get unique services (returns: array of strings)
-                - "{count: .data | length, services: [.data[].attributes.service] | unique}" - Custom aggregation (returns: object)
-
-                Common jq patterns:
-                - Select: [.data[] | select(.attributes.status == "error")] - Wrap in [] for array output
-                - Map: [.data[] | .attributes.message] - Wrap in [] for array output
-                - Filter array: .data | map(select(.attributes.service == "api"))
-                - Count: .data | length
-                - Unique values: [.data[].attributes.service] | unique
-
-                Important: Filters that produce multiple outputs (like .data[]) should be wrapped in brackets [.data[]] to return a single array instead of multiple JSON values.
+                - ".data[0]" - Get first log entry (returns: object)
+                - "[.data[]]" - Get all logs as array (returns: array)
+                - ".data | length" - Count logs (returns: number)
+                - "[.data[].attributes.service] | unique" - Unique services (returns: array)
 
                 Security: jq expressions are sandboxed (no file system access)
 
