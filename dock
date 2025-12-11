@@ -57,7 +57,7 @@ case "$1" in
   ;;
   build)
     shift
-    docker compose build "app" "$@"
+    docker compose --profile prod build "app" "$@"
     docker compose build "dev" "$@"
     docker compose build "composer" "$@"
   ;;

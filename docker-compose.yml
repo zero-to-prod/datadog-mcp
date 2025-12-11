@@ -1,26 +1,26 @@
 services:
-  app:
+  prod:
     build: .
     ports:
-      - "8080:80"
+      - "8081:80"
     volumes:
       - mcp-sessions:/app/storage/mcp-sessions
     restart: unless-stopped
+    profiles:
+      - prod
 
   dev:
     build:
       context: .
       target: build
     ports:
-      - "8082:80"
+      - "8080:80"
     volumes:
       - .:/app
       - ./Caddyfile:/etc/frankenphp/Caddyfile:ro
     environment:
       - MCP_DEBUG=${MCP_DEBUG:-false}
     command: frankenphp run --config /etc/frankenphp/Caddyfile
-    profiles:
-      - dev
 
   composer:
     build:
