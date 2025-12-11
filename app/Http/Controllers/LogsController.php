@@ -562,7 +562,7 @@ class LogsController
 
                 DEFAULT: Use format="full" unless user explicitly needs aggregation
                 TEXT,
-            enum: ['full', 'count', 'summary', 'scope_analysis', 'event_timeline', 'error_signatures', 'field_stats', 'compare_batch_outcomes', 'causal_chain', 'auto']
+            enum: ['full', 'count', 'summary', 'scope_analysis', 'event_timeline', 'error_signatures', 'field_stats', 'compare_batch_outcomes', 'causal_chain', 'auto', 'test_parsing']
         )]
         ?string $format = 'full',
         #[Schema(
@@ -884,6 +884,8 @@ class LogsController
             $response = $this->formatCompareBatchOutcomes($response, $query, $time_display, $from, $to, $batch_field);
         } elseif ($format === 'causal_chain') {
             $response = $this->formatCausalChain($response, $query, $time_display, $from, $to, $correlation_field, $lookback_minutes);
+        } elseif ($format === 'test_parsing') {
+            $response = $this->formatTestParsing($response, $query, $time_display, $from, $to);
         } elseif ($format === 'auto') {
             $response = $this->formatAuto($response, $query, $time_display, $from, $to, $batch_field, $correlation_field, $lookback_minutes);
         } else {
@@ -1243,11 +1245,18 @@ class LogsController
     {
         $count = isset($response['data']) && is_array($response['data']) ? count($response['data']) : 0;
         $time_span_ms = $to - $from;
-        $density_per_minute = $time_span_ms > 0 ? ($count / ($time_span_ms / 60000)) : 0;
+
+        // Calculate density with proper float division
+        $density_per_minute = 0;
+        if ($time_span_ms > 0 && $count > 0) {
+            $time_span_minutes = $time_span_ms / 60000.0; // Convert to minutes (float division)
+            $density_per_minute = $count / $time_span_minutes;
+        }
 
         // Aggregate by status and service
         $by_status = [];
         $by_service = [];
+        $timestamp_strings = [];
 
         if (isset($response['data']) && is_array($response['data'])) {
             foreach ($response['data'] as $log) {
@@ -1260,12 +1269,20 @@ class LogsController
                 if (isset($attrs['service'])) {
                     $by_service[$attrs['service']] = ($by_service[$attrs['service']] ?? 0) + 1;
                 }
+
+                // Collect timestamps for trend analysis (as strings)
+                if (isset($attrs['timestamp'])) {
+                    $timestamp_strings[] = $attrs['timestamp'];
+                }
             }
         }
 
         // Sort services by count and limit to top 5
         arsort($by_service);
         $by_service = array_slice($by_service, 0, 5, true);
+
+        // Calculate trend (increasing/decreasing/stable) using existing method
+        $trend = $this->calculateTrend($timestamp_strings);
 
         // Calculate confidence score
         $confidence = 0.5; // Base confidence
@@ -1294,7 +1311,10 @@ class LogsController
             'scope' => [
                 'count' => $count,
                 'time_span_ms' => $time_span_ms,
-                'density_per_minute' => round($density_per_minute, 2),
+                'time_span_minutes' => round($time_span_ms / 60000.0, 2),
+                'density_per_minute' => round($density_per_minute, 3), // 3 decimal places for precision
+                'density_per_hour' => round($density_per_minute * 60, 2),
+                'trend' => $trend,
                 'has_more' => isset($response['meta']['page']['after']) && $response['meta']['page']['after'] !== null,
             ],
             'breakdown' => [
@@ -1724,38 +1744,127 @@ class LogsController
     {
         $lower = strtolower($normalized);
 
+        // Infrastructure errors (ProxySQL, cluster, sync)
+        if (preg_match('/proxysql|cluster|sync conflict|replication/', $lower)) {
+            if (preg_match('/sync conflict|checksum mismatch/', $lower)) {
+                return 'Data Sync Conflict';
+            }
+            if (preg_match('/cluster/', $lower)) {
+                return 'Cluster Synchronization Error';
+            }
+            return 'Infrastructure Error';
+        }
+
         // Database errors
-        if (preg_match('/database|db|mysql|postgres/', $lower)) {
+        if (preg_match('/database|db|mysql|postgres|sql/', $lower)) {
             if (preg_match('/timeout/', $lower)) {
                 return 'Database Connection Timeout';
             }
             if (preg_match('/connection|connect/', $lower)) {
                 return 'Database Connection Failure';
             }
+            if (preg_match('/deadlock/', $lower)) {
+                return 'Database Deadlock';
+            }
+            if (preg_match('/duplicate|constraint/', $lower)) {
+                return 'Database Constraint Violation';
+            }
             return 'Database Error';
         }
 
-        // HTTP errors
+        // HTTP errors (specific status codes)
+        if (preg_match('/\b(4\d{2}|5\d{2})\b/', $lower, $matches)) {
+            $status_code = $matches[1];
+            if ($status_code === '400') {
+                return 'HTTP 400 Bad Request';
+            }
+            if ($status_code === '401') {
+                return 'HTTP 401 Unauthorized';
+            }
+            if ($status_code === '403') {
+                return 'HTTP 403 Forbidden';
+            }
+            if ($status_code === '404') {
+                return 'HTTP 404 Not Found';
+            }
+            if ($status_code === '429') {
+                return 'HTTP 429 Rate Limit Exceeded';
+            }
+            if ($status_code === '500') {
+                return 'HTTP 500 Internal Server Error';
+            }
+            if ($status_code === '502') {
+                return 'HTTP 502 Bad Gateway';
+            }
+            if ($status_code === '503') {
+                return 'HTTP 503 Service Unavailable';
+            }
+            if ($status_code === '504') {
+                return 'HTTP 504 Gateway Timeout';
+            }
+            if ($status_code[0] === '4') {
+                return 'HTTP 4xx Client Error';
+            }
+            return 'HTTP 5xx Server Error';
+        }
+
+        // Generic HTTP errors
         if (preg_match('/http|https/', $lower)) {
             if (preg_match('/timeout/', $lower)) {
                 return 'HTTP Timeout Error';
             }
-            if (preg_match('/500/', $lower)) {
-                return 'HTTP 500 Internal Server Error';
-            }
-            if (preg_match('/404/', $lower)) {
-                return 'HTTP 404 Not Found';
-            }
             return 'HTTP Error';
         }
 
-        // Authentication errors
-        if (preg_match('/auth|unauthorized|forbidden/', $lower)) {
+        // Authentication & authorization errors
+        if (preg_match('/auth|unauthorized|forbidden|permission denied|access denied/', $lower)) {
+            if (preg_match('/token|jwt/', $lower)) {
+                return 'Token Authentication Failure';
+            }
+            if (preg_match('/expired/', $lower)) {
+                return 'Authentication Token Expired';
+            }
             return 'Authentication Failure';
         }
 
+        // API & Integration errors
+        if (preg_match('/api|feed|integration|webhook/', $lower)) {
+            if (preg_match('/rate limit|throttle/', $lower)) {
+                return 'API Rate Limit Error';
+            }
+            if (preg_match('/feed/', $lower)) {
+                return 'Feed Processing Error';
+            }
+            return 'API Integration Error';
+        }
+
+        // Data validation errors
+        if (preg_match('/validation|invalid|malformed|parse error/', $lower)) {
+            if (preg_match('/json/', $lower)) {
+                return 'JSON Parsing Error';
+            }
+            if (preg_match('/xml/', $lower)) {
+                return 'XML Parsing Error';
+            }
+            return 'Data Validation Error';
+        }
+
+        // Performance errors
+        if (preg_match('/slow|performance|memory|cpu/', $lower)) {
+            if (preg_match('/memory/', $lower)) {
+                return 'Memory Exhaustion Error';
+            }
+            return 'Performance Issue';
+        }
+
         // Connection errors
-        if (preg_match('/connection|connect|refused/', $lower)) {
+        if (preg_match('/connection|connect|refused|unreachable/', $lower)) {
+            if (preg_match('/refused/', $lower)) {
+                return 'Connection Refused';
+            }
+            if (preg_match('/unreachable/', $lower)) {
+                return 'Host Unreachable';
+            }
             return 'Connection Error';
         }
 
@@ -1765,11 +1874,14 @@ class LogsController
         }
 
         // Not found errors
-        if (preg_match('/not found|notfound/', $lower)) {
+        if (preg_match('/not found|notfound|missing/', $lower)) {
+            if (preg_match('/file|path/', $lower)) {
+                return 'File Not Found';
+            }
             return 'Resource Not Found';
         }
 
-        // Generic
+        // Generic error
         return 'Error Pattern';
     }
 
@@ -1785,13 +1897,62 @@ class LogsController
     protected function generateErrorRecommendation(string $pattern_name, string $severity, int $service_count): string
     {
         $recommendations = [
+            // Infrastructure errors
+            'Data Sync Conflict' => 'Run LOAD MYSQL SERVERS TO RUNTIME on affected ProxySQL nodes to resolve sync conflicts. Check for configuration drift.',
+            'Cluster Synchronization Error' => 'Verify cluster node health and network connectivity. Check for split-brain scenarios.',
+            'Infrastructure Error' => 'Review infrastructure components for health issues. Check monitoring dashboards.',
+
+            // Database errors
             'Database Connection Timeout' => 'Review database connection pool settings and query performance. Consider increasing timeout threshold or optimizing slow queries.',
             'Database Connection Failure' => 'Check database server health and network connectivity. Verify connection pool configuration.',
-            'HTTP Timeout Error' => 'Investigate service response times. Check for downstream dependencies or network issues.',
+            'Database Deadlock' => 'Review transaction isolation levels and query patterns. Consider optimizing locking strategy.',
+            'Database Constraint Violation' => 'Review data validation logic and unique constraints. Check for race conditions.',
+            'Database Error' => 'Review database logs for specific error details. Check server health and capacity.',
+
+            // HTTP errors
+            'HTTP 400 Bad Request' => 'Review request validation logic and client payload structure. Check API documentation.',
+            'HTTP 401 Unauthorized' => 'Verify authentication tokens and credentials. Check for expired sessions.',
+            'HTTP 403 Forbidden' => 'Review permission settings and access control policies.',
+            'HTTP 404 Not Found' => 'Verify resource IDs and API endpoints. Check for deleted or moved resources.',
+            'HTTP 429 Rate Limit Exceeded' => 'Implement exponential backoff and request throttling. Review rate limit quotas.',
             'HTTP 500 Internal Server Error' => 'Review application logs for stack traces. Check for recent deployments or configuration changes.',
+            'HTTP 502 Bad Gateway' => 'Check upstream service health and connectivity. Verify load balancer configuration.',
+            'HTTP 503 Service Unavailable' => 'Check service health and capacity. Review auto-scaling policies.',
+            'HTTP 504 Gateway Timeout' => 'Investigate upstream service response times. Check timeout configurations.',
+            'HTTP 4xx Client Error' => 'Review client request structure and validation. Check API documentation.',
+            'HTTP 5xx Server Error' => 'Review server logs and recent deployments. Check for resource exhaustion.',
+            'HTTP Timeout Error' => 'Investigate service response times. Check for downstream dependencies or network issues.',
+            'HTTP Error' => 'Review HTTP logs for specific error codes. Check service health.',
+
+            // Authentication errors
+            'Token Authentication Failure' => 'Verify token generation and validation logic. Check for clock skew issues.',
+            'Authentication Token Expired' => 'Review token expiration policies. Implement token refresh flow.',
             'Authentication Failure' => 'Verify authentication service health. Check for expired tokens or misconfigured credentials.',
+
+            // API & Integration errors
+            'API Rate Limit Error' => 'Implement request queuing and backoff strategy. Contact vendor for quota increase if needed.',
+            'Feed Processing Error' => 'Review feed validation logic and error handling. Check for malformed data.',
+            'API Integration Error' => 'Verify API endpoint health and credentials. Review integration logs.',
+
+            // Data validation errors
+            'JSON Parsing Error' => 'Review JSON structure and encoding. Check for truncated payloads.',
+            'XML Parsing Error' => 'Review XML structure and schema validation. Check for encoding issues.',
+            'Data Validation Error' => 'Review input validation rules and error messages. Check for edge cases.',
+
+            // Performance errors
+            'Memory Exhaustion Error' => 'Review memory usage patterns and resource limits. Implement pagination or streaming.',
+            'Performance Issue' => 'Profile application performance and identify bottlenecks. Review resource allocation.',
+
+            // Connection errors
+            'Connection Refused' => 'Verify service is running and listening on correct port. Check firewall rules.',
+            'Host Unreachable' => 'Verify network connectivity and DNS resolution. Check routing tables.',
             'Connection Error' => 'Verify network connectivity and service availability. Check firewall rules and DNS resolution.',
+
+            // Timeout errors
             'Timeout Error' => 'Investigate service performance and response times. Consider increasing timeout thresholds if appropriate.',
+
+            // Not found errors
+            'File Not Found' => 'Verify file paths and permissions. Check for case sensitivity issues.',
             'Resource Not Found' => 'Verify resource IDs and API endpoints. Check for data consistency issues.',
         ];
 
@@ -2582,7 +2743,7 @@ class LogsController
      *
      * @param  array  $response  The Datadog API response
      *
-     * @return array  Enriched response with message_parsed.* fields
+     * @return array  Enriched response with message_parsed.* fields and extraction metadata
      */
     protected function enrichWithParsedMessages(array $response): array
     {
@@ -2590,16 +2751,58 @@ class LogsController
             return $response;
         }
 
+        // Track extraction statistics
+        $stats = [
+            'attempted' => 0,
+            'successful' => 0,
+            'failed' => 0,
+            'sample_extracted_fields' => [],
+            'failure_reasons' => [
+                'no_json_detected' => 0,
+                'parse_error' => 0,
+            ],
+        ];
+
         foreach ($response['data'] as &$log) {
             $attrs = $log['attributes'] ?? [];
+            $message = $attrs['message'] ?? '';
+
+            $stats['attempted']++;
+
+            // Check if JSON/XML is present
+            $has_structure = str_contains($message, '{') ||
+                str_contains($message, '[') ||
+                (str_contains($message, '<') && str_contains($message, '>'));
+
+            if (!$has_structure) {
+                $stats['failed']++;
+                $stats['failure_reasons']['no_json_detected']++;
+                continue;
+            }
+
             $parsed = $this->parseMessageField($attrs);
 
             if ($parsed !== null) {
                 // Merge parsed fields into attributes
                 $log['attributes'] = array_merge($attrs, $parsed);
+                $stats['successful']++;
+
+                // Collect sample fields (limit to first 5 unique fields)
+                foreach (array_keys($parsed) as $field) {
+                    if (count($stats['sample_extracted_fields']) < 5 &&
+                        !in_array($field, $stats['sample_extracted_fields'], true)) {
+                        $stats['sample_extracted_fields'][] = $field;
+                    }
+                }
+            } else {
+                $stats['failed']++;
+                $stats['failure_reasons']['parse_error']++;
             }
         }
         unset($log); // Break reference
+
+        // Add extraction metadata to response
+        $response['field_extraction'] = $stats;
 
         return $response;
     }
@@ -2610,6 +2813,11 @@ class LogsController
      * Detects and extracts JSON or XML embedded in log messages,
      * enabling rich querying of previously unstructured data.
      *
+     * Strategy:
+     * 1. Find last occurrence of { (most reliable for suffix JSON)
+     * 2. Try extracting balanced braces (handles nested JSON)
+     * 3. Fall back to XML parsing
+     *
      * @param  array  $log_attributes  Log attributes array
      *
      * @return array|null  Flattened parsed data or null if no structure found
@@ -2618,20 +2826,46 @@ class LogsController
     {
         $message = $log_attributes['message'] ?? '';
 
-        // Try JSON parsing (most common case)
-        if (str_contains($message, '{') || str_contains($message, '[')) {
-            // Extract JSON substring (handles text before/after JSON)
-            if (preg_match('/\{.*\}|\[.*\]/s', $message, $matches)) {
-                $json_str = $matches[0];
+        // Strategy 1: Find last occurrence of { (most reliable for suffixed JSON)
+        // Handles: "[2025-12-11] DEBUG: {...}" and "API REQUEST FROM: 10.1.1.1 {...}"
+        if (str_contains($message, '{')) {
+            $last_brace = strrpos($message, '{');
+            if ($last_brace !== false) {
+                $json_str = substr($message, $last_brace);
                 $parsed = json_decode($json_str, true);
 
-                if (json_last_error() === JSON_ERROR_NONE) {
+                if (json_last_error() === JSON_ERROR_NONE && is_array($parsed)) {
                     return $this->flattenParsedData($parsed, 'message_parsed');
                 }
             }
         }
 
-        // Try XML parsing
+        // Strategy 2: Try extracting balanced braces (handles nested JSON with non-greedy match)
+        // Handles: "{outer: {inner: value}}" in middle of text
+        if (str_contains($message, '{')) {
+            if (preg_match('/\{(?:[^{}]|(?R))*\}/x', $message, $matches)) {
+                $parsed = json_decode($matches[0], true);
+                if (json_last_error() === JSON_ERROR_NONE && is_array($parsed)) {
+                    return $this->flattenParsedData($parsed, 'message_parsed');
+                }
+            }
+        }
+
+        // Strategy 3: Try JSON arrays (less common but still needed)
+        // Handles: "[{...}, {...}]" format
+        if (str_contains($message, '[')) {
+            $last_bracket = strrpos($message, '[');
+            if ($last_bracket !== false) {
+                $json_str = substr($message, $last_bracket);
+                $parsed = json_decode($json_str, true);
+
+                if (json_last_error() === JSON_ERROR_NONE && is_array($parsed)) {
+                    return $this->flattenParsedData($parsed, 'message_parsed');
+                }
+            }
+        }
+
+        // Strategy 4: Try XML parsing
         if (str_contains($message, '<') && str_contains($message, '>')) {
             libxml_use_internal_errors(true);
             $xml = simplexml_load_string($message);
@@ -3374,6 +3608,9 @@ class LogsController
         $has_batches = $this->hasBatchIdentifiers($data);
         $has_correlation_ids = $this->hasCorrelationIds($data);
 
+        // Initialize decision log for transparency
+        $decision_log = [];
+
         $combined_analysis = [
             'format' => 'auto',
             'analyses' => [],
@@ -3385,29 +3622,63 @@ class LogsController
             ],
         ];
 
-        // Run error signatures if errors present
+        // Check and run error signatures if errors present
+        $decision_log[] = [
+            'check' => 'has_errors',
+            'result' => $has_errors,
+            'action' => $has_errors ? 'run error_signatures' : 'skip error_signatures',
+            'reason' => $has_errors ? 'Found error logs, running error pattern analysis' : 'No error logs detected',
+        ];
+
         if ($has_errors) {
             $combined_analysis['analyses']['error_signatures'] =
                 $this->formatErrorSignatures($response, $query, $time_range, $from, $to);
         }
 
-        // Run batch comparison if mixed outcomes in batches
+        // Check and run batch comparison if mixed outcomes in batches
+        $decision_log[] = [
+            'check' => 'has_batch_field',
+            'result' => $has_batches,
+            'action' => ($has_batches && $has_errors) ? 'attempt batch_comparison' : 'skip batch_comparison',
+            'reason' => !$has_batches ? 'No batch identifiers (batch_id, transaction_id, feed_id) found in logs' :
+                (!$has_errors ? 'Batch fields found but no errors to compare' : 'Batch fields and errors found, running batch comparison'),
+        ];
+
         if ($has_batches && $has_errors) {
             $batch_analysis = $this->formatCompareBatchOutcomes($response, $query, $time_range, $from, $to, $batch_field);
             // Only include if successful (no error key)
             if (!isset($batch_analysis['error'])) {
                 $combined_analysis['analyses']['batch_comparison'] = $batch_analysis;
+                $decision_log[count($decision_log) - 1]['action'] = 'run batch_comparison (success)';
+            } else {
+                $decision_log[count($decision_log) - 1]['action'] = 'skip batch_comparison (no mixed batches)';
+                $decision_log[count($decision_log) - 1]['reason'] = $batch_analysis['error'] ?? 'Batch comparison failed';
             }
         }
 
-        // Run causal chain if correlation IDs present
+        // Check and run causal chain if correlation IDs present
+        $decision_log[] = [
+            'check' => 'has_correlation_field',
+            'result' => $has_correlation_ids,
+            'action' => ($has_correlation_ids && $has_errors) ? 'attempt causal_chain' : 'skip causal_chain',
+            'reason' => !$has_correlation_ids ? 'No correlation fields (trace_id, request_id, order_id) found in logs' :
+                (!$has_errors ? 'Correlation fields found but no errors to trace' : 'Correlation fields and errors found, building causal chain'),
+        ];
+
         if ($has_correlation_ids && $has_errors) {
             $causal_analysis = $this->formatCausalChain($response, $query, $time_range, $from, $to, $correlation_field, $lookback_minutes);
             // Only include if successful (no error key)
             if (!isset($causal_analysis['error'])) {
                 $combined_analysis['analyses']['causal_chain'] = $causal_analysis;
+                $decision_log[count($decision_log) - 1]['action'] = 'run causal_chain (success)';
+            } else {
+                $decision_log[count($decision_log) - 1]['action'] = 'skip causal_chain (insufficient data)';
+                $decision_log[count($decision_log) - 1]['reason'] = $causal_analysis['error'] ?? 'Causal chain analysis failed';
             }
         }
+
+        // Add decision log to response for transparency
+        $combined_analysis['decision_log'] = $decision_log;
 
         // Generate combined insights
         $combined_analysis['insights'] = $this->synthesizeInsights($combined_analysis['analyses']);
@@ -3416,6 +3687,138 @@ class LogsController
         $combined_analysis['usage_hint'] = $this->generateUsageHint($combined_analysis['analyses']);
 
         return $combined_analysis;
+    }
+
+    /**
+     * Formats response as parsing test on first log entry.
+     *
+     * Tests field extraction on the first log to help debug parsing issues.
+     * Shows what would be extracted without running full analysis.
+     *
+     * @param  array  $response  Datadog API response
+     * @param  string  $query  Original query
+     * @param  string  $time_range  Time range display string
+     * @param  int  $from  Start timestamp
+     * @param  int  $to  End timestamp
+     *
+     * @return array  Test parsing results with debug info
+     */
+    protected function formatTestParsing(
+        array $response,
+        string $query,
+        string $time_range,
+        int $from,
+        int $to
+    ): array {
+        $data = $response['data'] ?? [];
+
+        if (empty($data)) {
+            return [
+                'format' => 'test_parsing',
+                'error' => 'No logs found for testing',
+                'suggestion' => 'Try expanding time range or adjusting query',
+                'query' => $query,
+                'time_range' => $time_range,
+            ];
+        }
+
+        // Get first log
+        $test_log = $data[0];
+        $attrs = $test_log['attributes'] ?? [];
+        $message = $attrs['message'] ?? '';
+
+        // Test JSON detection
+        $has_json_object = str_contains($message, '{');
+        $has_json_array = str_contains($message, '[');
+        $has_xml = str_contains($message, '<') && str_contains($message, '>');
+
+        // Try parsing
+        $parsed = $this->parseMessageField($attrs);
+        $parse_successful = $parsed !== null;
+
+        // Extract what would be found
+        $extracted_fields = $parse_successful ? array_keys($parsed) : [];
+
+        // Try to identify why parsing might fail
+        $parse_error = null;
+        if (!$parse_successful && ($has_json_object || $has_json_array)) {
+            // Attempt to get JSON error details
+            if ($has_json_object) {
+                $last_brace = strrpos($message, '{');
+                if ($last_brace !== false) {
+                    $json_str = substr($message, $last_brace);
+                    json_decode($json_str, true);
+                    if (json_last_error() !== JSON_ERROR_NONE) {
+                        $parse_error = json_last_error_msg();
+                    }
+                }
+            }
+        }
+
+        return [
+            'format' => 'test_parsing',
+            'test_log' => [
+                'timestamp' => $attrs['timestamp'] ?? 'unknown',
+                'service' => $attrs['service'] ?? 'unknown',
+                'status' => $attrs['status'] ?? 'unknown',
+                'original_message' => $message,
+                'message_length' => strlen($message),
+                'detection' => [
+                    'json_object_detected' => $has_json_object,
+                    'json_array_detected' => $has_json_array,
+                    'xml_detected' => $has_xml,
+                ],
+                'parse_successful' => $parse_successful,
+                'parse_error' => $parse_error,
+                'extracted_fields' => $extracted_fields,
+                'extracted_count' => count($extracted_fields),
+            ],
+            'sample_extracted_values' => $parse_successful ? array_slice($parsed, 0, 3) : [],
+            'verdict' => $this->generateParsingVerdict($has_json_object, $has_json_array, $has_xml, $parse_successful, $parse_error),
+            'query' => $query,
+            'time_range' => $time_range,
+        ];
+    }
+
+    /**
+     * Generates a human-readable verdict for parsing test results.
+     *
+     * @param  bool  $has_json_object
+     * @param  bool  $has_json_array
+     * @param  bool  $has_xml
+     * @param  bool  $parse_successful
+     * @param  string|null  $parse_error
+     *
+     * @return string
+     */
+    protected function generateParsingVerdict(
+        bool $has_json_object,
+        bool $has_json_array,
+        bool $has_xml,
+        bool $parse_successful,
+        ?string $parse_error
+    ): string {
+        if ($parse_successful) {
+            return '✅ Parsing successful - fields extracted and queryable';
+        }
+
+        if (!$has_json_object && !$has_json_array && !$has_xml) {
+            return '❌ No structured data detected - message appears to be plain text';
+        }
+
+        if ($parse_error !== null) {
+            return "❌ Parsing failed: {$parse_error}";
+        }
+
+        if ($has_json_object || $has_json_array) {
+            return '⚠️ JSON detected but parsing failed - possibly malformed or incomplete';
+        }
+
+        if ($has_xml) {
+            return '⚠️ XML detected but parsing failed - possibly malformed';
+        }
+
+        return '❌ Parsing failed for unknown reason';
     }
 
     /**
