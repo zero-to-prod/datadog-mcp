@@ -40,6 +40,19 @@ class LogsController
             - Wildcards: * (multi-char), ? (single-char)
             - Attribute names are case-sensitive
 
+            ## Severity Levels (status: attribute)
+            Filter logs by severity using status:LEVEL (from highest to lowest priority):
+            - status:emergency - System unusable, immediate action required
+            - status:alert - Action must be taken immediately
+            - status:critical - Critical conditions
+            - status:error - Error conditions (most common for troubleshooting)
+            - status:warn - Warning conditions
+            - status:notice - Normal but significant condition
+            - status:info - Informational messages
+            - status:debug - Debug-level messages
+
+            Combine severities: status:(error OR warn) or status:>=error
+
             ## Common Query Patterns
             "Show errors in production" → env:production status:error (last 1h)
             "Find slow API requests" → service:api @duration:>3000 (last 1h)
@@ -175,52 +188,6 @@ class LogsController
         #[Schema(
             type: 'string',
             description: <<<TEXT
-                Relative time range (alternative to from/to). Optional.
-                Automatically calculates timestamps from now going back in time.
-
-                Supported formats:
-                - "15m" or "15min" - Last 15 minutes
-                - "1h" or "1hr" - Last 1 hour
-                - "24h" - Last 24 hours
-                - "7d" or "7day" - Last 7 days
-                - "30d" - Last 30 days
-
-                Examples: "1h", "24h", "7d"
-
-                Note: Use either time_range OR (from + to), not both.
-                TEXT,
-            pattern: '^\\d+[mhdMHD](?:in|hr|ay)?$'
-        )]
-        ?string $time_range = null,
-        #[Schema(
-            type: 'integer',
-            description: <<<TEXT
-                Start timestamp in milliseconds (epoch time). Optional if time_range provided.
-                Defines the minimum timestamp for logs to retrieve.
-                Example: 1764696580317 (represents 2025-01-02 12:03:00 UTC)
-                Tip: Generate with: (new DateTime('2025-01-02 12:03:00'))->getTimestamp() * 1000
-
-                Note: Use either time_range OR (from + to), not both.
-                TEXT,
-            minimum: 0
-        )]
-        ?int $from = null,
-        #[Schema(
-            type: 'integer',
-            description: <<<TEXT
-                End timestamp in milliseconds (epoch time). Optional if time_range provided.
-                Defines the maximum timestamp for logs to retrieve. Must be greater than \$from parameter.
-                Example: 1765301380317 (represents 2025-01-09 12:03:00 UTC)
-                Maximum time range: Limited by your Datadog plan (typically 15 minutes to 7 days)
-
-                Note: Use either time_range OR (from + to), not both.
-                TEXT,
-            minimum: 0
-        )]
-        ?int $to = null,
-        #[Schema(
-            type: 'string',
-            description: <<<TEXT
                 Log search query using Datadog search syntax. Required.
 
                 SYNTAX REFERENCE:
@@ -307,6 +274,53 @@ class LogsController
         )]
         string $query,
         #[Schema(
+            type: 'string',
+            description: <<<TEXT
+                Relative time range (alternative to from/to). Optional.
+                Automatically calculates timestamps from now going back in time.
+                Default: "1h" (last 1 hour) if no time parameters provided.
+
+                Supported formats:
+                - "15m" or "15min" - Last 15 minutes
+                - "1h" or "1hr" - Last 1 hour (default)
+                - "24h" - Last 24 hours
+                - "7d" or "7day" - Last 7 days
+                - "30d" - Last 30 days
+
+                Examples: "1h", "24h", "7d"
+
+                Note: Use either time_range OR (from + to), not both.
+                TEXT,
+            pattern: '^\\d+[mhdMHD](?:in|hr|ay)?$'
+        )]
+        ?string $time_range = '1h',
+        #[Schema(
+            type: 'integer',
+            description: <<<TEXT
+                Start timestamp in milliseconds (epoch time). Optional if time_range provided.
+                Defines the minimum timestamp for logs to retrieve.
+                Example: 1764696580317 (represents 2025-01-02 12:03:00 UTC)
+                Tip: Generate with: (new DateTime('2025-01-02 12:03:00'))->getTimestamp() * 1000
+
+                Note: Use either time_range OR (from + to), not both.
+                TEXT,
+            minimum: 0
+        )]
+        ?int $from = null,
+        #[Schema(
+            type: 'integer',
+            description: <<<TEXT
+                End timestamp in milliseconds (epoch time). Optional if time_range provided.
+                Defines the maximum timestamp for logs to retrieve. Must be greater than \$from parameter.
+                Example: 1765301380317 (represents 2025-01-09 12:03:00 UTC)
+                Maximum time range: Limited by your Datadog plan (typically 15 minutes to 7 days)
+
+                Note: Use either time_range OR (from + to), not both.
+                TEXT,
+            minimum: 0
+        )]
+        ?int $to = null,
+        #[Schema(
             type: 'boolean',
             description: <<<TEXT
                 Whether to include the tags array in log entries. Optional, defaults to false.
@@ -356,19 +370,49 @@ class LogsController
                 TEXT,
             enum: ['timestamp', '-timestamp', 'timestamp:asc', 'timestamp:desc']
         )]
-        ?string $sort = null
+        ?string $sort = null,
+        #[Schema(
+            type: 'string',
+            description: <<<TEXT
+                Output format. Optional.
+                Determines what data is returned in the response.
+
+                - "full" (default): Returns complete log entries with all attributes
+                - "count": Returns only the total count of matching logs (no log data)
+                  Perfect for: dashboards, health checks, "how many errors?" queries
+                  Response: {"count": 47, "query": "...", "time_range": "..."}
+
+                - "summary": Returns aggregated statistics without individual log entries
+                  Includes: count, time range, top services, top error messages
+                  Response: {"count": ..., "services": {...}, "top_errors": [...]}
+
+                Use "count" when you only need volume metrics.
+                Use "summary" for quick insights without full log data.
+                Use "full" when you need to analyze individual log entries.
+                TEXT,
+            enum: ['full', 'count', 'summary']
+        )]
+        ?string $format = 'full'
     ): array {
+        // Ensure time_range has a default value (handle null from MCP)
+        $time_range = $time_range ?? '1h';
+
         // Validate parameter combinations
-        if ($time_range !== null && ($from !== null || $to !== null)) {
+        $using_from_to = $from !== null || $to !== null;
+        $using_time_range = $time_range !== '1h' || !$using_from_to;  // Using non-default time_range or default when from/to not provided
+
+        if ($using_from_to && $time_range !== '1h') {
             throw new RuntimeException('Cannot use both time_range and from/to parameters. Use either time_range OR (from + to).');
         }
 
-        if ($time_range === null && ($from === null || $to === null)) {
-            throw new RuntimeException('Must provide either time_range OR both from and to parameters.');
-        }
-
-        // Parse time_range if provided
-        if ($time_range !== null) {
+        // If using from/to, validate both are provided
+        if ($using_from_to) {
+            if ($from === null || $to === null) {
+                throw new RuntimeException('Must provide both from and to parameters when using explicit timestamps.');
+            }
+            // Don't parse time_range when using from/to
+        } else {
+            // Parse time_range (defaults to '1h')
             [$from, $to] = $this->parseTimeRange($time_range);
         }
 
@@ -407,7 +451,19 @@ class LogsController
 
         $url = 'https://api.datadoghq.com/api/v2/logs/events/search';
 
-        return $this->filterTags($this->response($url, $body), $includeTags ?? false);
+        $response = $this->response($url, $body);
+
+        // Handle different output formats
+        if ($format === 'count') {
+            return $this->formatCount($response, $query, $time_range, $from, $to);
+        }
+
+        if ($format === 'summary') {
+            return $this->formatSummary($response, $query, $time_range, $from, $to);
+        }
+
+        // Default: full format
+        return $this->filterTags($response, $includeTags ?? false);
     }
 
     /**
@@ -509,6 +565,93 @@ class LogsController
         $from_ms = $now_ms - $offset_ms;
 
         return [$from_ms, $now_ms];
+    }
+
+    /**
+     * Formats response as count only.
+     *
+     * @param  array  $response
+     * @param  string  $query
+     * @param  string  $time_range
+     * @param  int  $from
+     * @param  int  $to
+     *
+     * @return array
+     */
+    protected function formatCount(array $response, string $query, string $time_range, int $from, int $to): array
+    {
+        $count = isset($response['data']) && is_array($response['data']) ? count($response['data']) : 0;
+
+        return [
+            'format' => 'count',
+            'count' => $count,
+            'query' => $query,
+            'time_range' => $time_range,
+            'from_ms' => $from,
+            'to_ms' => $to,
+            'has_more' => isset($response['meta']['page']['after']) && $response['meta']['page']['after'] !== null,
+        ];
+    }
+
+    /**
+     * Formats response as summary with aggregated statistics.
+     *
+     * @param  array  $response
+     * @param  string  $query
+     * @param  string  $time_range
+     * @param  int  $from
+     * @param  int  $to
+     *
+     * @return array
+     */
+    protected function formatSummary(array $response, string $query, string $time_range, int $from, int $to): array
+    {
+        $count = isset($response['data']) && is_array($response['data']) ? count($response['data']) : 0;
+
+        // Aggregate statistics from log entries
+        $services = [];
+        $statuses = [];
+        $messages = [];
+
+        if (isset($response['data']) && is_array($response['data'])) {
+            foreach ($response['data'] as $log) {
+                $attrs = $log['attributes'] ?? [];
+
+                // Count services
+                if (isset($attrs['service'])) {
+                    $services[$attrs['service']] = ($services[$attrs['service']] ?? 0) + 1;
+                }
+
+                // Count statuses
+                if (isset($attrs['status'])) {
+                    $statuses[$attrs['status']] = ($statuses[$attrs['status']] ?? 0) + 1;
+                }
+
+                // Collect top error messages
+                if (isset($attrs['message'])) {
+                    $msg = substr($attrs['message'], 0, 100); // Truncate long messages
+                    $messages[$msg] = ($messages[$msg] ?? 0) + 1;
+                }
+            }
+        }
+
+        // Sort and limit
+        arsort($services);
+        arsort($statuses);
+        arsort($messages);
+
+        return [
+            'format' => 'summary',
+            'count' => $count,
+            'query' => $query,
+            'time_range' => $time_range,
+            'from_ms' => $from,
+            'to_ms' => $to,
+            'services' => array_slice($services, 0, 10, true), // Top 10 services
+            'statuses' => $statuses,
+            'top_messages' => array_slice($messages, 0, 10, true), // Top 10 messages
+            'has_more' => isset($response['meta']['page']['after']) && $response['meta']['page']['after'] !== null,
+        ];
     }
 
     /**
