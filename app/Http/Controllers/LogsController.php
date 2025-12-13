@@ -6,8 +6,8 @@ namespace App\Http\Controllers;
 
 use Mcp\Capability\Attribute\McpTool;
 use Mcp\Capability\Attribute\Schema;
+use Mcp\Exception\ToolCallException;
 use Mcp\Schema\ToolAnnotations;
-use RuntimeException;
 
 /**
  * Datadog Logs Search API Tools
@@ -810,23 +810,23 @@ class LogsController
         [$from, $to, $time_display] = $this->parseTime($time);
 
         if ($from >= $to) {
-            throw new RuntimeException('Parsed time range is invalid: start time must be before end time');
+            throw new ToolCallException('time range invalid: start time must be before end time');
         }
 
         // Auto-normalize query: add @ prefix to custom attributes, uppercase Boolean operators
         $query = $this->normalizeQuery($query);
 
         if ($limit !== null && ($limit < 1 || $limit > 1000)) {
-            throw new RuntimeException('Parameter "limit" must be between 1 and 1000');
+            throw new ToolCallException('parameter "limit" must be between 1 and 1000');
         }
 
         if ($sort !== null && !in_array($sort, ['timestamp', '-timestamp', 'timestamp:asc', 'timestamp:desc'], true)) {
-            throw new RuntimeException('Parameter "sort" must be "timestamp", "-timestamp", "timestamp:asc", or "timestamp:desc"');
+            throw new ToolCallException('parameter "sort" must be "timestamp", "-timestamp", "timestamp:asc", or "timestamp:desc"');
         }
 
         // Validate json_path and jq_filter are mutually exclusive
         if ($json_path !== null && trim($json_path) !== '' && $jq_filter !== null && trim($jq_filter) !== '') {
-            throw new RuntimeException('Cannot use both json_path and jq_filter parameters. Use json_path for simple field extraction, or jq_filter for complex transformations.');
+            throw new ToolCallException('cannot use both json_path and jq_filter parameters. Use json_path for simple field extraction, or jq_filter for complex transformations.');
         }
 
         $body = [
@@ -854,7 +854,7 @@ class LogsController
 
         // Validate field parameter for field_stats
         if ($format === 'field_stats' && ($field === null || trim($field) === '')) {
-            throw new RuntimeException('Parameter "field" is required when format="field_stats"');
+            throw new ToolCallException('parameter "field" is required when format="field_stats"');
         }
 
         $response = $this->response($url, $body);
@@ -921,8 +921,8 @@ class LogsController
      */
     protected function response(string $url, array $body): mixed
     {
-        $api_key = $_ENV['DD_API_KEY'] ?? throw new RuntimeException('DD_API_KEY environment variable is not set');
-        $app_key = $_ENV['DD_APPLICATION_KEY'] ?? throw new RuntimeException('DD_APPLICATION_KEY environment variable is not set');
+        $api_key = $_ENV['DD_API_KEY'] ?? throw new ToolCallException('DD_API_KEY environment variable is not set');
+        $app_key = $_ENV['DD_APPLICATION_KEY'] ?? throw new ToolCallException('DD_APPLICATION_KEY environment variable is not set');
 
         $json_body = json_encode($body);
 
@@ -944,7 +944,8 @@ class LogsController
         curl_close($ch);
 
         if ($response === false) {
-            throw new RuntimeException('cURL request failed: '.$curl_error);
+            error_log(sprintf('[%s] [ERROR] cURL request failed: %s', date('Y-m-d H:i:s'), $curl_error));
+            throw new ToolCallException('cURL request failed: '.$curl_error);
         }
 
         if ($http_code !== 200) {
@@ -964,12 +965,14 @@ class LogsController
                 $error_message .= ': '.$response;
             }
 
-            throw new RuntimeException($error_message);
+            error_log(sprintf('[%s] [ERROR] Datadog API error: %s', date('Y-m-d H:i:s'), $error_message));
+            throw new ToolCallException($error_message);
         }
 
         $decoded = json_decode($response, true);
         if (json_last_error() !== JSON_ERROR_NONE) {
-            throw new RuntimeException('Failed to decode JSON response: '.json_last_error_msg());
+            error_log(sprintf('[%s] [ERROR] Failed to decode JSON response: %s', date('Y-m-d H:i:s'), json_last_error_msg()));
+            throw new ToolCallException('failed to decode JSON response: '.json_last_error_msg());
         }
 
         return $decoded ?? [];
@@ -1004,7 +1007,7 @@ class LogsController
             ];
 
             if (!isset($milliseconds_map[$unit])) {
-                throw new RuntimeException('Invalid time unit. Supported: m (minutes), h (hours), d (days)');
+                throw new ToolCallException('invalid time unit. Supported: m (minutes), h (hours), d (days)');
             }
 
             $offset_ms = $value * $milliseconds_map[$unit];
@@ -1065,8 +1068,8 @@ class LogsController
                 return [$from_ms, $now_ms, 'last 7d'];
         }
 
-        throw new RuntimeException(
-            'Invalid time format. Supported: "1h", "24h", "7d", "2024-01-15T10:00:00Z", "1765461420000", "yesterday", etc.'
+        throw new ToolCallException(
+            'invalid time format. Supported: "1h", "24h", "7d", "2024-01-15T10:00:00Z", "1765461420000", "yesterday", etc.'
         );
     }
 
@@ -1090,7 +1093,7 @@ class LogsController
             $dt = new \DateTime($value);
             return (int) ($dt->getTimestamp() * 1000);
         } catch (\Exception $e) {
-            throw new RuntimeException('Invalid datetime format: '.$value.'. Expected ISO 8601 (e.g., 2024-01-15T10:00:00Z)');
+            throw new ToolCallException('invalid datetime format: '.$value.'. Expected ISO 8601 (e.g., 2024-01-15T10:00:00Z)');
         }
     }
 
@@ -2190,14 +2193,14 @@ class LogsController
      *
      * @return mixed Returns any valid JSON value (array, object, string, number, boolean, or null)
      *
-     * @throws RuntimeException
+     * @throws ToolCallException
      */
     protected function applyJqFilter(array $data, string $jq_filter, bool $raw_output = false, bool $streaming = false): mixed
     {
         // Validate jq is available
         $jq_path = $this->findJqBinary();
         if ($jq_path === null) {
-            throw new RuntimeException(
+            throw new ToolCallException(
                 'jq binary not found. Install with: apk add --no-cache jq'
             );
         }
@@ -2233,7 +2236,8 @@ class LogsController
         $process = proc_open($command, $descriptor_spec, $pipes);
 
         if (!is_resource($process)) {
-            throw new RuntimeException('Failed to execute jq command');
+            error_log(sprintf('[%s] [ERROR] Failed to execute jq command: %s', date('Y-m-d H:i:s'), $command));
+            throw new ToolCallException('failed to execute jq command');
         }
 
         // Write JSON input to jq's stdin
@@ -2261,7 +2265,9 @@ class LogsController
                 $error_message .= ': '.trim($stderr);
             }
 
-            throw new RuntimeException($error_message.sprintf(' (exit code: %d)', $exit_code));
+            $full_error_message = $error_message.sprintf(' (exit code: %d)', $exit_code);
+            error_log(sprintf('[%s] [ERROR] jq filter error: %s, filter: %s', date('Y-m-d H:i:s'), $full_error_message, $jq_filter));
+            throw new ToolCallException($full_error_message);
         }
 
         // Parse jq output based on mode
@@ -2278,7 +2284,8 @@ class LogsController
             // JSON mode: decode the output
             $result = json_decode($stdout, true);
             if (json_last_error() !== JSON_ERROR_NONE) {
-                throw new RuntimeException('Failed to decode jq output: '.json_last_error_msg());
+                error_log(sprintf('[%s] [ERROR] Failed to decode jq output: %s, stdout: %s', date('Y-m-d H:i:s'), json_last_error_msg(), substr($stdout, 0, 200)));
+                throw new ToolCallException('failed to decode jq output: '.json_last_error_msg());
             }
 
             return $result;
@@ -2293,7 +2300,7 @@ class LogsController
      *
      * @return array|string
      *
-     * @throws RuntimeException
+     * @throws ToolCallException
      */
     protected function parseStreamingOutput(string $stdout, bool $raw_output): array|string
     {
@@ -2312,7 +2319,8 @@ class LogsController
 
             $result = json_decode($lines[0], true);
             if (json_last_error() !== JSON_ERROR_NONE) {
-                throw new RuntimeException('Failed to decode jq output: '.json_last_error_msg());
+                error_log(sprintf('[%s] [ERROR] Failed to decode jq output (single line): %s, line: %s', date('Y-m-d H:i:s'), json_last_error_msg(), substr($lines[0], 0, 200)));
+                throw new ToolCallException('failed to decode jq output: '.json_last_error_msg());
             }
 
             return $result;
@@ -2329,9 +2337,9 @@ class LogsController
         foreach ($lines as $index => $line) {
             $decoded = json_decode($line, true);
             if (json_last_error() !== JSON_ERROR_NONE) {
-                throw new RuntimeException(
-                    'Failed to decode jq streaming output line '.($index + 1).': '.json_last_error_msg().' | Line: '.$line
-                );
+                $error_msg = 'failed to decode jq streaming output line '.($index + 1).': '.json_last_error_msg().' | Line: '.$line;
+                error_log(sprintf('[%s] [ERROR] %s', date('Y-m-d H:i:s'), $error_msg));
+                throw new ToolCallException($error_msg);
             }
             $results[] = $decoded;
         }
